@@ -5,8 +5,7 @@
 
 using namespace cute;
 
-int main() {
-
+void test_complete_shape() {
   auto l = Layout<Shape<_8, _6>, Stride<_6, _1>>{};
 
   auto tile = Layout<Shape<_2, _3>>{};
@@ -107,5 +106,76 @@ int main() {
   // printf("\n");
   // print(get<2>(l));
   // printf("\n");
+}
+
+void test_incomplete_shape() {
+  auto l = Layout<Shape<_8, _6>, Stride<_6, _1>>{};
+
+  auto tile = Layout<Shape<_2, _3>>{};
+
+  auto ll = make_identity_tensor(Shape<_8, _5>{});
+
+  /**
+   * 规律：local_partition会把make_identity_tensor生成的tensor填成可以被tile整除的模样
+  */
+  printf("p:\n");
+  int idx = 0;
+  auto p = local_partition(ll, tile, idx);
+  for (int i = 0; i < size<0>(p); ++i) {
+    for (int j = 0; j < size<1>(p); ++j) {
+      printf("coord(%d, %d) -> val(%d, %d)\n", i, j, get<0>(p(i, j)), get<1>(p(i, j)));
+    }
+  }
+    printf("pp:\n");
+
+  auto pp = local_partition(ll, tile, 1);
+
+  for (int i = 0; i < size<0>(pp); ++i) {
+    for (int j = 0; j < size<1>(pp); ++j) {
+      printf("coord(%d, %d) -> val(%d, %d)\n", i, j, get<0>(pp(i, j)), get<1>(pp(i, j)));
+    }
+  }
+
+  printf("ppp:\n");
+
+  auto ppp = local_partition(ll, tile, 2);
+
+  for (int i = 0; i < size<0>(ppp); ++i) {
+    for (int j = 0; j < size<1>(ppp); ++j) {
+      printf("coord(%d, %d) -> val(%d, %d)\n", i, j, get<0>(ppp(i, j)), get<1>(ppp(i, j)));
+    }
+  }
+
+  printf("pppp:\n");
+  auto pppp = local_partition(ll, tile, 3);
+
+  for (int i = 0; i < size<0>(pppp); ++i) {
+    for (int j = 0; j < size<1>(pppp); ++j) {
+      printf("coord(%d, %d) -> val(%d, %d)\n", i, j, get<0>(pppp(i, j)), get<1>(pppp(i, j)));
+    }
+  }
+
+    printf("ppppp:\n");
+  auto ppppp = local_partition(ll, tile, 4);
+
+  for (int i = 0; i < size<0>(ppppp); ++i) {
+    for (int j = 0; j < size<1>(ppppp); ++j) {
+      printf("coord(%d, %d) -> val(%d, %d)\n", i, j, get<0>(ppppp(i, j)), get<1>(ppppp(i, j)));
+    }
+  }
+      printf("pppppp:\n");
+  auto pppppp = local_partition(ll, tile, 5);
+
+  for (int i = 0; i < size<0>(pppppp); ++i) {
+    for (int j = 0; j < size<1>(pppppp); ++j) {
+      printf("coord(%d, %d) -> val(%d, %d)\n", i, j, get<0>(pppppp(i, j)), get<1>(pppppp(i, j)));
+    }
+  }
+}
+
+int main() {
+  // test_complete_shape();
+  test_incomplete_shape();
+  return 0;
 
 }
