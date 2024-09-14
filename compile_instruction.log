@@ -1,0 +1,1 @@
+nvcc --std=c++17 -arch=sm_86   -I /opt/deeproute/common/cutlass/include/  test_cute_gemv_rowmajor.cu -o a
