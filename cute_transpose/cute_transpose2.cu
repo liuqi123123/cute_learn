@@ -11,6 +11,7 @@
 #include "cutlass/gemm/threadblock/threadblock_swizzle.h"
 #include "cutlass/transform/pitch_linear_thread_map.h"
 #include <cute/tensor.hpp>
+#include <random>
 #include "cute/numeric/integral_constant.hpp"
 using Element = float;
 

@@ -11,6 +11,8 @@
 #include "cutlass/gemm/threadblock/threadblock_swizzle.h"
 #include "cutlass/transform/pitch_linear_thread_map.h"
 #include <cute/tensor.hpp>
+
+#include <random>
 using Element = float;
 
 #define THREAD 2

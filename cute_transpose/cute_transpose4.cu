@@ -5,6 +5,7 @@
 #include "cutlass/array_subbyte.h"
 #include "cutlass/cutlass.h"
 #include "cutlass/transform/threadblock/predicated_tile_access_iterator.h"
+#include <random>
 
 #include "cutlass/gemm/threadblock/default_mma_core_sm80.h"
 #include "cutlass/gemm/threadblock/mma_multistage.h"

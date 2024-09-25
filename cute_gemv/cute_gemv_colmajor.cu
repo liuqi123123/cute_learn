@@ -212,7 +212,7 @@ int main() {
   // int batch = 1, m = 1000, k = 512, a = 1, b = 0;
   // int batch = 13, m = 1721344, k = 4, a = 1, b = 0;
   // int batch = 1, m = 2048, k = 512, a = 1, b = 0;
-  int batch = 1, m = 512, k = 4013, a = 1, b = 0;
+  int batch = 1, m = 1026, k = 1023, a = 1, b = 0;
   // int batch = 1, m = 1, k = 512, a = 1, b = 0;
   // int batch = 1, m = 5, k = 5, a = 1, b = 0;
   int batch_stride_A = m * k, batch_stride_B = k, batch_stride_C = m;
@@ -244,7 +244,7 @@ int main() {
   cudaMalloc(&device_B, sizeof(Element) * batch * k);
   cudaMemcpy(device_B, B, sizeof(Element) * batch * k, cudaMemcpyHostToDevice);
   cudaMalloc(&device_C, sizeof(Element) * batch * m);
-  constexpr int Alignment = 4;
+  constexpr int Alignment = 2;
 
   func<Element, Alignment>(device_A,
                            device_B,
