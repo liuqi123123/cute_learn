@@ -24,6 +24,7 @@ using namespace cute;
           printf("%s:\n", #STR); \
           print(STR); \
           printf("\n"); \
+          printf("\n"); \
         } while (0)
 
 
@@ -46,10 +47,10 @@ __global__ void f(void* device_A,
   auto gb = make_tensor(make_gmem_ptr((Element*)(device_B)), make_layout(make_shape(_1{}, k)));
   auto gb_identity = make_identity_tensor(make_shape(size<0>(gb), size<1>(gb)));
   auto gb_identity_lp = local_partition(gb_identity, Shape<_1, Int<32 * WarpArrangment::kCount>>{}, threadIdx.x);
-  // if (thread0()) {
-  //   PRINT(gb_identity_lp(1));
-  //   PRINT(layout(gb_identity_lp));
-  // }
+  if (thread0()) {
+    PRINT(gb_identity_lp(1));
+    PRINT(layout(gb_identity_lp));
+  }
   auto tBpB = make_tensor<bool>(make_shape(size<0>(gb_identity_lp)));
 
 

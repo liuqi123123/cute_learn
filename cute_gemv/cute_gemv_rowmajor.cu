@@ -96,65 +96,6 @@ __global__ void f(void* device_A,
   }
   auto thr_g_b = g2r_thr_copy.partition_S(tensor_b);
 
-  // auto tApA = make_tensor<bool>(make_shape(size<1>(thr_g_a), _1{}), make_stride(_1{}, _0{}));
-  // auto tBpB = make_tensor<bool>(make_shape(size<1>(thr_g_b), _1{}), Stride<_1, _0>{});
-
-  // auto tBpB = make_tensor<bool>(make_shape(_4{}, _5{}), Stride<_5, _1>{});
-  // auto tApA = make_tensor<bool>(Shape<_1>{});
-  // auto tBpB = make_tensor<bool>(Shape<_1>{});
-    if (thread0()) {
-    // if (threadIdx.x == 127) {
-        // print(tBpB);
-        // printf("\n");
-        // printf("%d\n", size(tApA));
-        // print(size<0>(tBpB));
-        // printf("\n");
-        // print(size<1>(tBpB));
-        // printf("\n");
-        // print(size<2>(tBpB));
-        // printf("\n");
-        // print(size<3>(tBpB));
-        // printf("\n");
-        // print(thr_g_a);
-        // printf("\n");
-        // print(thr_g_a.size());
-        // printf("\n");
-        // print(size<0>(thr_g_a));
-        // printf("\n");
-        // print(size<1>(thr_g_a));
-        // printf("\n");
-        // print(size<2>(thr_g_a));
-        // printf("\n");
-        // print(rank(thr_g_a));
-        // printf("\n");
-        // print(depth(thr_g_a));
-        // printf("\n");
-        // print(shape(thr_g_a));
-
-        // printf("\n");
-        // print(thr_g_a(_, _, 0));
-        // printf("\n");
-        // print(thr_g_a(_, _, 0).size());
-        // printf("\n");
-        // print(size<0>(thr_g_a(_, _, 0)));
-        // printf("\n");
-        // print(size<1>(thr_g_a(_, _, 0)));
-        // printf("\n");
-        // print(size<2>(thr_g_a(_, _, 0)));
-        // printf("\n");
-        // print(rank(thr_g_a(_, _, 0)));
-        // printf("\n");
-        // print(depth(thr_g_a(_, _, 0)));
-        // printf("\n");
-        // print(shape(thr_g_a(_, _, 0)));
-        // printf("\n");
-        // print(thr_g_b);
-        // printf("\n");
-        // printf("%d\n ",thr_g_a.size());
-        // printf("\n");
-        // printf("%d\n ",size(thr_g_b));
-        // printf("\n");
-    }
 
   auto thr_r_a = make_fragment_like(thr_g_a(_, _, 0));
   auto thr_r_b = make_fragment_like(thr_g_b(_, _, 0));
