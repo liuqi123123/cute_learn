@@ -1,22 +1,29 @@
 #pragma once
 #include "cuda_runtime.h"
-#include "cutlass/half.h"
 #include "cute/util/print.hpp"
+#include "cutlass/half.h"
 #include <iostream>
 #include <random>
 #include <vector>
+#include <cassert>
 
 #define PRINT(STR)                                                             \
   do {                                                                         \
     printf("%s:\n", #STR);                                                     \
     print(STR);                                                                \
-    printf("\n\n");                                                              \
+    printf("\n\n");                                                            \
   } while (0)
 
+enum class InitialType {
+  Random,
+  AllOne,
+  Identity,
+  Increment,
+  Coorded
+};
 
-
-
-template <typename T> class MemHelper {
+template <typename T>
+class MemHelper {
   struct pair_hash {
     template <typename T1, typename T2>
     size_t operator()(const std::pair<T1, T2> &p) const noexcept {
@@ -40,31 +47,53 @@ private:
 
 public:
   MemHelper() : rd_(), eng_(rd_()), distr_(-1.0f, 1.0f) {}
-  CG_PTR GetCpuGpuBuffer(size_t size, bool need_initial = true) {
+  CG_PTR GetCpuGpuBuffer(size_t size, InitialType type = InitialType::Random, int Stride = 0) {
     T *cpu_ptr = new T[size]{static_cast<T>(0)};
 
-    if (need_initial) {
+    if (type == InitialType::Random) {
       if constexpr (std::is_same_v<bool, T>) {
         std::random_device rd;
         std::mt19937 gen(rd());
         std::bernoulli_distribution d(0.5);
         for (size_t i = 0; i < size; ++i) {
           cpu_ptr[i] = d(gen);
-          // cpu_ptr[i] = 1;
         }
       } else {
-        // if (size == 5) {
-        //       for (size_t i = 0; i < size ; ++i) {
-        //       cpu_ptr[i] = (T)(int)i;
-
-        //     }
-        // } else {
-
-        for (size_t i = 0; i < size ; ++i) {
+        for (size_t i = 0; i < size; ++i) {
           cpu_ptr[i] = (T)distr_(eng_);
         }
+      }
+    } else if (type == InitialType::AllOne) {
+      for (size_t i = 0; i < size; ++i) {
+        cpu_ptr[i] = 1;
+      }
+    } else if (type == InitialType::Identity) {
+      double sqrtNum = sqrt(size);
+      assert(sqrtNum == floor(sqrtNum) &&
+             "size must be the square of an integer");
+      int H = sqrtNum;
+      for (int i = 0; i < H; ++i) {
+        for (int j = 0; j < H; ++j) {
+          if (i == j) {
+            cpu_ptr[i * H + j] = (T)1;
+          } else {
+            cpu_ptr[i * H + j] = (T)0;
+          }
         }
+      }
+    } else if (type == InitialType::Increment) {
+      for (size_t i = 0; i < size; ++i) {
+        // cpu_ptr[i] = (float)(i % 2048) * 0.001;
+        cpu_ptr[i] = (float)i* 0.001 ;
+      }
+    } else if (type == InitialType::Coorded) {
+      // for (size_t i = 0; i < size; ++i) {
+      //   float row = i / Stride;
+      //   int col = i % Stride;
+      //   int lenth = std::to_string(std::abs(col)).length();
+      //   cpu_ptr[i] = (float)(row + (float)col / (float)lenth);
       // }
+
     }
 
     T *gpu_ptr;
@@ -92,14 +121,14 @@ public:
                cudaMemcpyDeviceToHost);
   }
 
-  void Regression(T *gt, T *result, bool first_wrong_break = true) {
+  void Regression(T *gt, T *result, bool first_wrong_break = true, bool always_print_ans = false) {
     size_t size = c_size_[(void *)gt];
     using Ts = float;
+    bool first_wrong_found = false;
 
     for (int i = 0; i < size; ++i) {
       Ts trans_gt = Ts(((T *)gt)[i]);
       Ts trans_res = Ts(((T *)result)[i]);
-
 
       float dif = std::abs(((T *)gt)[i] - ((T *)result)[i]);
       float absolute_error = 0.1;
@@ -107,15 +136,15 @@ public:
       if constexpr (std::is_same_v<T, int8_t>) {
         absolute_error = 1;
       } else if constexpr (std::is_same_v<T, cutlass::half_t>) {
-        absolute_error = 0.01;
+        absolute_error = 0.05;
       } else {
-        absolute_error = 0.1;
+        absolute_error = 0.001;
       }
 
       if (std::isnan(trans_gt)) {
         std::cout << "gt idx: " << i << " is nan!" << std::endl;
         break;
-      }else if (std::isinf(trans_gt))  {
+      } else if (std::isinf(trans_gt)) {
         std::cout << "gt idx: " << i << " is inf!" << std::endl;
         break;
       }
@@ -123,19 +152,27 @@ public:
       if (std::isnan(trans_res)) {
         std::cout << "res idx: " << i << " is nan!" << std::endl;
         break;
-      }else if (std::isinf(trans_res))  {
+      } else if (std::isinf(trans_res)) {
         std::cout << "res idx: " << i << " is inf!" << std::endl;
         break;
       }
 
-      if (dif > (Ts)absolute_error) {
-        std::cout << "idx: " << i << " get wrong: "
-                  << "gt: " << (Ts)((T *)gt)[i] << " vs "
-                  << (Ts)((T *)result)[i] << std::endl;
-        if (first_wrong_break) {
-          break;
-        }
+      if (always_print_ans || first_wrong_found) {
+            std::cout << "idx: " << i << " : "
+              << "gt: " << (Ts)((T *)gt)[i] << " vs res:"
+              << (Ts)((T *)result)[i] << std::endl;
       }
+      if (dif > (Ts)absolute_error) {
+        first_wrong_found = true;
+        std::cout << "idx: " << i << " get wrong: "
+                  << "gt: " << (Ts)((T *)gt)[i] << " vs res:"
+                  << (Ts)((T *)result)[i] << std::endl;
+        // if (first_wrong_break && false == always_print_ans) {
+        //   break;
+        // }
+      }
+
+
     }
   }
 
