@@ -6,7 +6,7 @@
  * V : {N, T, F}
  */
 struct MultiHeadAttentionProblemSize {
-  int N, S, T, E, F, H;
+  int N, S, T, E, F, H, Align8_T;
   float Scale;
 
  public:
@@ -25,7 +25,7 @@ struct MultiHeadAttentionProblemSize {
    */
   CUTLASS_HOST_DEVICE
   MultiHeadAttentionProblemSize(int n, int s, int t, int e, int f, int h)
-      : N(n), S(s), T(t), E(e), F(f), H(h), Scale(1 / sqrtf(E)) {}
+      : N(n), S(s), T(t), E(e), F(f), H(h), Scale(1 / sqrtf(E)), Align8_T((T + 7) / 8 * 8)  {}
 
   /**
    * Scaled dot-producted attention.

@@ -111,7 +111,7 @@ struct KernelTraits {
     // B M S
     Swizzle<3, 3, 3>{}, make_layout(Shape<Int<ThreadblockShape0::kN>, Int<kE>>{},
                               Stride<Int<kE>, _1>{})));
-  using SmemLayoutK = decltype(tile_to_shape(SmemLayoutAtomK{}, Shape<Int<ThreadblockShape0::kN>, Int<kE>>{}));
+  using SmemLayoutK = decltype(tile_to_shape(SmemLayoutAtomK{}, Shape<Int<ThreadblockShape0::kN>, Int<kE>, Int<Stages>>{}));
 
   static const int V_swizzle_S = Split_kF == 128 ? 4 : 3;
   using SmemLayoutAtomV = decltype(composition(
@@ -250,7 +250,7 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
                     Element *k, Element *v, Element *out) {
   static const int kE = KernelTraits::kE;
   static const int Split_kF = KernelTraits::Split_kF;
-  static const int Stages = KernelTraits::Stages;
+  static const int kStages = KernelTraits::Stages;
   using SharedStorage = typename KernelTraits::SharedStorage;
   extern __shared__ int s[];
 
@@ -338,8 +338,9 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
   auto tKgK = k_g2s_thr_copy.partition_S(tiled_block_k(_, _, 0));
   auto tKsK = k_g2s_thr_copy.partition_D(smem_k);
   auto tKrK = make_fragment_like(tKgK(_, 0, 0));
-
-  copy(k_tiled_copy, tKgK, tKsK);
+  int k_smem_write = 0;
+  copy(k_tiled_copy, tKgK, tKsK(_,_,_, k_smem_write));
+  k_smem_write ^= 1;
   cp_async_fence();
   // cp_async_wait<0>();
   // __syncthreads();
@@ -413,7 +414,7 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
   // auto tBrB = thr_mma.partition_fragment_B(gB(_, _, 0)); // (MMA, MMA_N,
   // MMA_K)
   auto thr_tKrK =
-      ( thr_mma.partition_fragment_B(smem_k(_, _))); // (MMA, MMA_N, MMA_K)
+      ( thr_mma.partition_fragment_B(smem_k(_, _, 0))); // (MMA, MMA_N, MMA_K)
   auto thr_tCrC = partition_fragment_C(
       tiled_mma,
       Shape<Int<KernelTraits::ThreadblockShape0::kM>,
@@ -486,26 +487,27 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
     copy(v_tiled_copy, tVgV, tVsV);
     cp_async_fence();
 
+  // if (itile + 1 < ntile) {
+    int next_itile = (itile + 1) % ntile;
+    tKgK = k_g2s_thr_copy.partition_S(tiled_block_k(_, _, next_itile));
+    copy(k_tiled_copy, tKgK, tKsK(_,_,_, k_smem_write));
+    k_smem_write ^= 1;
+  // }
+  cp_async_fence();
 
-
-
+    // cp_async_wait<2>();
+    // __syncthreads();
   //   cp_async_wait<0>();
   // __syncthreads();
     // cute::copy(thr_KsK, thr_tKrK);
     // smem -> reg
-    cute::copy(s2r_tiled_copy_k, thr_KsK, thr_tKrK_view);
+    cute::copy(s2r_tiled_copy_k, thr_KsK(_,_,_,k_smem_write ^ 1), thr_tKrK_view);
 
     clear(thr_tCrC);
     //Q的顺序为内部->col->row, 为何不是内部->row->col?
     cute::gemm(tiled_mma, thr_tCrC, thr_tQrQ, thr_tKrK, thr_tCrC);
-  __syncthreads();
-  // if (itile + 1 < ntile) {
-    int next_itile = (itile + 1) % ntile;
-    tKgK = k_g2s_thr_copy.partition_S(tiled_block_k(_, _, next_itile));
+  // __syncthreads();
 
-    copy(k_tiled_copy, tKgK, tKsK);
-  // }
-  cp_async_fence();
 
   if (thread0()) {
     // PRINT(layout(thr_tQrQ));
@@ -540,14 +542,6 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
     // auto tCiC = s2r_c_identity_thr_copy.partition_S(C_identity);
     auto tCiC = thr_mma.partition_C(C_identity);
     auto tCpC = make_tensor<bool>(make_shape(_2{}, size<1>(tCiC), size<2>(tCiC)));
-    if (thread0()) {
-      // print_tensor(tCiC);
-      // PRINT(get<1>(tCiC(4 * 1 + 1)));
-      // PRINT((tCiC(2)));
-      // PRINT(get<1>(tCiC((make_coord(1,0), 0, 7))));
-      // PRINT(get<0>(tCiC((make_coord(0,1), 0, 7))));
-      // PRINT(get<1>(tCiC((make_coord(0,1), 0, 7))));
-    }
 #pragma unroll
     for (int i = 0; i < size<2>(tCpC); ++i) {
       {
@@ -555,9 +549,7 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
         for (int j = 0; j < size<0>(tCpC); ++j) {
 #pragma unroll
           for (int m = 0; m < size<1>(tCpC); ++m) {
-            // tCpC(j, m, i) = threadIdx.x % 32 % 4 * 2 + i * 8 + j >= params.T - itile * KernelTraits::ThreadblockShape0::kN;
-            //why tCiC don't use (make_coord(0,0), 0, i)) to get value ?
-            tCpC(j, m, i) = get<1>(tCiC(4 * i + j)) >= params.T - itile * KernelTraits::ThreadblockShape0::kN;
+            tCpC(j, m, i) = threadIdx.x % 32 % 4 * 2 + i * 8 + j >= params.T - itile * KernelTraits::ThreadblockShape0::kN;
           if (threadIdx.x < 32 && tCpC(j, m, i)) {
         // print("threadidx.x:%d,i:%d, threadIdx.x % 32 % 4 * 2 + i * 8 + j: %d, params.T - k * KernelTraits::ThreadblockShape0::kN: %d\n", threadIdx.x,i, threadIdx.x % 32 % 4 * 2 + i * 8 + j, params.T - k * KernelTraits::ThreadblockShape0::kN);
         // printf("k:%d,get<1>(tCiC((0, 0, %d)): %d\n", k, i,(int)get<1>(tCiC((make_coord(0,0), 0, i))));
@@ -571,13 +563,13 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
           }
         }
       }
+      // why get<1>(tCiC((make_coord(0, 0), 0, i))) always get 0 ?, it's cute's
+      // bug or my error?
+      //  tCpC(i) = get<1>(tCiC((make_coord(0, 0), 0, i))) > params.T - k *
+      //  KernelTraits::ThreadblockShape0::kN; tCpC(i) = threadIdx.x % 32 % 4 *
+      //  2 + i * 8  > params.T - k * KernelTraits::ThreadblockShape0::kN;
     }
-if (thread0()) {
-  // print(size<0>(shape((thr_tCrC(make_coord(_,_), 0, 0)))));
-  // print_tensor(get<0, 1>(thr_tCrC));
-  // print(get<1>(thr_tCrC));
-  // print(get<2>(thr_tCrC));
-}
+
 #pragma unroll
       for (int i = 0; i < size<0>(thr_tCrC); ++i) {
       #pragma unroll
@@ -619,11 +611,9 @@ if (thread0()) {
       for (int j = 0; j < 2; ++j) {
 #pragma unroll
         for (int m = 0; m < 2; ++m) {
-          // const int offset = m + 2 * j + i * 4;
-          // new_tCrC_max[j] =
-          //     max(new_tCrC_max[j], (ElementAccumulator)*(thr_tCrC.data() + offset));
+          const int offset = m + 2 * j + i * 4;
           new_tCrC_max[j] =
-              max(new_tCrC_max[j], (ElementAccumulator)(thr_tCrC(make_coord(m, j), 0, i)));
+              max(new_tCrC_max[j], (ElementAccumulator)*(thr_tCrC.data() + offset));
         }
       }
     }
@@ -657,14 +647,12 @@ if (thread0()) {
           // new_exp_tcrc((m, j), 0, i) =
           //     exp((ElementAccumulator)thr_tCrC((m, j), 0, i) - new_tCrC_max[j]);
           // new_exp_tcrc_sum[j] += new_exp_tcrc((m, j), 0, i);
-        thr_tCrC(make_coord(m, j), 0, i) = static_cast<Element>(cutlass::fast_exp((
-            thr_tCrC(make_coord(m, j), 0, i) - (Element)new_m_max[j])));
 
-        // const int offset = m + j * 2 + i * 4;
-        //         *(thr_tCrC.data() + offset) = static_cast<Element>(cutlass::fast_exp((
-        //     (*(thr_tCrC.data() + offset)) - (Element)new_m_max[j])));
+        const int offset = m + j * 2 + i * 4;
+                *(thr_tCrC.data() + offset) = static_cast<Element>(cutlass::fast_exp((
+            (*(thr_tCrC.data() + offset)) - (Element)new_m_max[j])));
 
-        new_exp_tcrc_sum[j] += (ElementAccumulator)(thr_tCrC(make_coord(m, j), 0, i));
+        new_exp_tcrc_sum[j] += (ElementAccumulator)(*(thr_tCrC.data() + offset));
 
           //   if (thread0()) {
           //   printf("thr_tCrC((%d, %d), 0, %d): %f\n", m, j, i,
@@ -708,9 +696,8 @@ if (thread0()) {
         for (int m = 0; m < 2; ++m) {
           // mma1_tOrO((m, j), 0, i) *= (Element)new_o_scale[j];
 
-          // const int offset = m + 2 * j + i * 4;
-          // *(mma1_tOrO.data() + offset) =  *(mma1_tOrO.data() + offset) * static_cast<Element>(exp_oldm_sub_newm[j]);
-          mma1_tOrO(make_coord(m, j), 0, i) = mma1_tOrO(make_coord(m, j), 0, i) * static_cast<Element>(exp_oldm_sub_newm[j]);
+          const int offset = m + 2 * j + i * 4;
+          *(mma1_tOrO.data() + offset) =  *(mma1_tOrO.data() + offset) * static_cast<Element>(exp_oldm_sub_newm[j]);
         }
       }
     }
@@ -753,10 +740,8 @@ if (thread0()) {
 #pragma unroll
         for (int m = 0; m < 2; ++m) {
           // mma1_tOrO((m, j), 0, i) *= (Element)new_o_scale[j];
-          // const int offset = m + 2 * j + i * 4;
-          // *(mma1_tOrO.data() + offset) =  *(mma1_tOrO.data() + offset) / static_cast<Element>(d[j]);
-          mma1_tOrO(make_coord(m, j), 0, i) = mma1_tOrO(make_coord(m, j), 0, i) / static_cast<Element>(d[j]);
-
+          const int offset = m + 2 * j + i * 4;
+          *(mma1_tOrO.data() + offset) =  *(mma1_tOrO.data() + offset) / static_cast<Element>(d[j]);
         }
       }
     }
@@ -848,8 +833,8 @@ for (int s = 0; s < size<1>(tEsE); ++s) {
 int main() {
   // int N = 1, S = 64, T = 128, F = 128, H = 1;
   // int N = 1, S = 33, T = 111, F = 128, H = 1;
-  // int N = 1, S = 1024, T = 1024, F = 128, H = 8;
-  int N = 1, S = 1111, T = 1111, F = 104, H = 8;
+  int N = 1, S = 1024, T = 1024, F = 128, H = 8;
+  // int N = 1, S = 1111, T = 1111, F = 104, H = 1;
   // int N = 1, S = 16, T = 32, F = 32, H = 1;
   MultiHeadAttentionProblemSize problem(N, S, T, kE, F, H);
   using KernelT = KernelTraits<cutlass::half_t, float, 8, kE, 128, 1>;

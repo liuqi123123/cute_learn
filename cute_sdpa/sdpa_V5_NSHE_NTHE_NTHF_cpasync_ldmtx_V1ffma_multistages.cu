@@ -14,7 +14,6 @@
 #include <cutlass/numeric_conversion.h>
 #include <cutlass/numeric_types.h>
 #include <iostream>
-#include "cutlass/half.h"
 
 #define CPU_CHECK
 using namespace cute;
@@ -62,20 +61,17 @@ struct KernelTraits {
   static const int warp_num = ThreadblockShape0::kM / WarpShape0::kM;
 
   struct SharedStorage {
-    cutlass::AlignedArray<Element, ThreadblockShape0::kM * kE> q_smem;
-    cutlass::AlignedArray<Element, ThreadblockShape0::kN *
+    cutlass::Array<Element, ThreadblockShape0::kM * kE> q_smem;
+    cutlass::Array<Element, ThreadblockShape0::kN *
                                        ThreadblockShape0::kK * Stages>
         k_smem;
-    cutlass::AlignedArray<Element, ThreadblockShape1::kK *
+    cutlass::Array<Element, ThreadblockShape1::kK *
                                        ThreadblockShape1::kN * Stages>
         v_smem;
   };
-  struct  EpilogueSharedStorage{
-    cutlass::Array<Element, ThreadblockShape0::kM * Split_kF> e_smem;
-  };
+
   static const int q_continuous_thread = kE / 8;
   static const int v_continuous_thread = ThreadblockShape1::kN / 8;
-  static const int epilogue_continuous_thread = Split_kF / 8;
 
   using q_g2s_copy_op = SM80_CP_ASYNC_CACHEGLOBAL<cute::uint128_t>;
   using q_g2s_copy_traits = Copy_Traits<q_g2s_copy_op>;
@@ -111,36 +107,13 @@ struct KernelTraits {
     // B M S
     Swizzle<3, 3, 3>{}, make_layout(Shape<Int<ThreadblockShape0::kN>, Int<kE>>{},
                               Stride<Int<kE>, _1>{})));
-  using SmemLayoutK = decltype(tile_to_shape(SmemLayoutAtomK{}, Shape<Int<ThreadblockShape0::kN>, Int<kE>>{}));
+  using SmemLayoutK = decltype(tile_to_shape(SmemLayoutAtomK{}, Shape<Int<ThreadblockShape0::kN>, Int<kE>, Int<Stages>>{}));
 
-  static const int V_swizzle_S = Split_kF == 128 ? 4 : 3;
   using SmemLayoutAtomV = decltype(composition(
     // B M S
-    Swizzle<3, 3, V_swizzle_S>{}, make_layout(Shape<Int<Split_kF>, Int<ThreadblockShape1::kK>>{},
-    // Swizzle<0, 0, 0>{}, make_layout(Shape<Int<Split_kF>, Int<ThreadblockShape1::kK>>{},
+    Swizzle<3, 3, 3>{}, make_layout(Shape<Int<Split_kF>, Int<ThreadblockShape1::kK>>{},
                               Stride<_1, Int<Split_kF>>{})));
-  using SmemLayoutV = decltype(tile_to_shape(SmemLayoutAtomV{},Shape<Int<Split_kF>, Int<ThreadblockShape1::kK>>{}));
-  using SmemLayoutVtransposedNoSwizzle = decltype(get_nonswizzle_portion(SmemLayoutV{}));
-
-  static const int Epi_swizzle_S = Split_kF == 128 ? 4 : 3;
-
-  using SmemLayoutEpilogue = decltype(composition(
-    // B M S
-    Swizzle<3, 3, Epi_swizzle_S>{}, make_layout(Shape<Int<ThreadblockShape0::kM>, Int<Split_kF>>{},
-    // Swizzle<0, 0, 0>{}, make_layout(Shape<Int<ThreadblockShape0::kM>, Int<Split_kF>>{},
-                              Stride<Int<Split_kF>, _1>{})));
-
-  using T_E = cutlass::AlignedArray<Element, Align>;
-  using e_s2g_copy_op = UniversalCopy<T_E>;
-  using e_s2g_traits = Copy_Traits<e_s2g_copy_op>;
-  using e_s2g_copy_atom = Copy_Atom<e_s2g_traits, Element>;
-  using e_s2g_copy_tile = decltype(make_tiled_copy(
-      e_s2g_copy_atom{},
-      Layout<Shape<Int<32 * warp_num / epilogue_continuous_thread>,
-                   Int<epilogue_continuous_thread>>,
-             Stride<Int<epilogue_continuous_thread>, _1>>{},
-      Layout<Shape<_1, Int<Align>>>{}));
-
+  using SmemLayoutV = decltype(tile_to_shape(SmemLayoutAtomV{},Shape<Int<Split_kF>, Int<ThreadblockShape1::kK>, Int<Stages>>{}));
 
   using T_Q = cutlass::AlignedArray<Element, Align>;
   using q_g2r_copy_op = UniversalCopy<T_Q>;
@@ -167,15 +140,10 @@ struct KernelTraits {
   using v_s2r_copy_traits = Copy_Traits<v_s2r_copy_op>;
   using v_s2r_copy_atom = Copy_Atom<v_s2r_copy_traits, Element>;
 
-
-  using c_identity_copy_op = SM75_U32x2_LDSM_N;
-  using c_identity_copy_traits = Copy_Traits<c_identity_copy_op>;
-  using c_identity_copy_atom = Copy_Atom<c_identity_copy_traits, Element>;
-
   using S2RCopyAtomQ = q_s2r_copy_atom;
   using S2RCopyAtomK = k_s2r_copy_atom;
   using S2RCopyAtomV = v_s2r_copy_atom;
-  using S2RCopyAtomIdentityC = c_identity_copy_atom;
+
 
   using T_K = cutlass::Array<Element, Align>;
   using k_g2r_copy_op = UniversalCopy<T_K>;
@@ -250,7 +218,7 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
                     Element *k, Element *v, Element *out) {
   static const int kE = KernelTraits::kE;
   static const int Split_kF = KernelTraits::Split_kF;
-  static const int Stages = KernelTraits::Stages;
+  static const int kStages = KernelTraits::Stages;
   using SharedStorage = typename KernelTraits::SharedStorage;
   extern __shared__ int s[];
 
@@ -308,15 +276,14 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
 //   PRINT(block_v);
 //   PRINT(tiled_block_v);
 // }
-#if 1
   auto smem_q = make_tensor(make_smem_ptr((Element *)&smem.q_smem),
                             typename KernelTraits::SmemLayoutQ{});
   auto smem_k = make_tensor(make_smem_ptr((Element *)&smem.k_smem),
-                            typename KernelTraits::SmemLayoutK{});
+                            typename KernelTraits::SmemLayoutK{});// (kTileM, kTileK, kStage)
   auto smem_v = make_tensor(make_smem_ptr((Element *)&smem.v_smem),
-                            typename KernelTraits::SmemLayoutV{});
-  auto smem_v_NoSwizzle = make_tensor(make_smem_ptr((Element *)&smem.v_smem),
-                            typename KernelTraits::SmemLayoutVtransposedNoSwizzle{});
+                            typename KernelTraits::SmemLayoutV{});// (kTileN, kTileK, kStage)
+
+
 
 
   typename KernelTraits::q_G2SCopy q_tiled_copy;
@@ -324,30 +291,62 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
   auto q_g2s_thr_copy = q_tiled_copy.get_slice(threadIdx.x);
   auto tQgQ = q_g2s_thr_copy.partition_S(block_q);
   auto tQsQ = q_g2s_thr_copy.partition_D(smem_q);
+  auto tQrQ = make_fragment_like(tQgQ(_, 0, 0));
 
 
-  copy(q_tiled_copy, tQgQ, tQsQ);
-  cp_async_fence();
-  // cp_async_wait<0>();
-  // __syncthreads();
+  cute::copy(q_tiled_copy, tQgQ, tQsQ);
 
+  // cp_async_fence();
+
+// #pragma unroll
+//   for (int i = 0; i < size<1>(tQgQ); ++i) {
+// #pragma unroll
+//     for (int j = 0; j < size<2>(tQgQ); ++j) {
+//       // cute::copy(tQgQ(_, i, j), tQsQ(_, i, j));
+//       cute::copy(tQgQ(_, i, j), tQrQ);
+//       cute::copy(tQrQ, tQsQ(_, i, j));
+//     }
+//   }
+
+  // auto tiled_smem_q = local_tile(
+  //     smem_q, make_shape(Int<KernelTraits::ThreadblockShape0::kM>{}, _16{}),
+  //     make_coord(0, _));
+
+  // typename KernelTraits::k_g2r_copy_tile k_tiled_copy;
   typename KernelTraits::k_G2SCopy k_tiled_copy;
 
   auto k_g2s_thr_copy = k_tiled_copy.get_slice(threadIdx.x);
 
-  auto tKgK = k_g2s_thr_copy.partition_S(tiled_block_k(_, _, 0));
+  auto tKgK = k_g2s_thr_copy.partition_S(tiled_block_k(_, _, _));
   auto tKsK = k_g2s_thr_copy.partition_D(smem_k);
-  auto tKrK = make_fragment_like(tKgK(_, 0, 0));
+  auto tKrK = make_fragment_like(tKgK(_, 0, 0, 0));
+// if (thread0()) {
+//   PRINT(tiled_block_k);
+//   PRINT(tKgK);
+//   PRINT(tKsK);
+//   PRINT(tKrK);
+// }
 
-  copy(k_tiled_copy, tKgK, tKsK);
-  cp_async_fence();
-  // cp_async_wait<0>();
-  // __syncthreads();
+// #pragma unroll
+//   for (int i = 0; i < size<1>(tKgK); ++i) {
+// #pragma unroll
+//     for (int j = 0; j < size<2>(tKgK); ++j) {
+//       // cute::copy(tKgK(_, i, j), tKsK(_, i, j));
+//       cute::copy(tKgK(_, i, j),  tKrK);
+//       cute::copy(tKrK,  tKsK(_, i, j));
+//     }
+//   }
+
+  // copy(k_tiled_copy, tKgK(_,_,_, 0), tKsK(_,_,_,0));
+
+  // cp_async_fence();
+
+  // typename KernelTraits::v_g2r_copy_tile v_tiled_copy;
   typename KernelTraits::v_G2SCopy v_tiled_copy;
 
   auto v_g2s_thr_copy = v_tiled_copy.get_slice(threadIdx.x);
 
-  auto tVgV = v_g2s_thr_copy.partition_S(tiled_block_v(_, _, 0));
+  auto tVgV = v_g2s_thr_copy.partition_S(tiled_block_v(_, _, _));
   auto tVsV = v_g2s_thr_copy.partition_D(smem_v);
   if(thread0()) {
     // PRINT(tiled_block_v);
@@ -355,12 +354,40 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
     // PRINT(tVsV);
     // PRINT(v_tiled_copy);
   }
+  auto tVrV = make_fragment_like(tVgV(_, 0, 0,0));
+  // copy(v_tiled_copy, tVgV(_,_,_, 0), tVsV(_,_,_, 0));
+  // cp_async_fence();
+  int itile_to_read = 0;
+  int ismem_read = 0;
+  int ismem_write = 0;
+  #pragma unroll
+  //submitted kStages, different from gemm multistages
+  for (int istage = 0; istage < kStages; ++istage) {
+    cute::copy(k_tiled_copy, tKgK(_,_,_, istage), tKsK(_,_,_, istage));
+    cute::copy(v_tiled_copy, tVgV(_,_,_, istage), tVsV(_,_,_, istage));
+    cp_async_fence();
+    ++itile_to_read;
+    ismem_write = (ismem_write + 1) % kStages;
+  }
+
+
+
+// if (thread0()) {
+//   PRINT(tiled_block_v);
+//   PRINT(tVgV);
+//   PRINT(tVsV);
+//   PRINT(tVrV);
+// }
 #if 1
-
-  // copy(v_tiled_copy, tVgV, tVsV);
-
-
-
+// #pragma unroll
+//   for (int i = 0; i < size<1>(tVgV); ++i) {
+// #pragma unroll
+//     for (int j = 0; j < size<2>(tVgV); ++j) {
+//       // cute::copy(tVgV(_, i, j), tVsV(_, i, j));
+//       cute::copy(tVgV(_, i, j),  tVrV);
+//       cute::copy(tVrV,  tVsV(_, i, j));
+//     }
+  // }
 
   typename KernelTraits::MMA tiled_mma;
     if (thread0()) {
@@ -407,13 +434,17 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
   //     thr_mma.partition_A(smem_q(_, _)); // (MMA, MMA_M, MMA_K, num_tile_k)
   // auto thr_KsK = thr_mma.partition_B(smem_k(_, _)); // (MMA, MMA_N, MMA_K, num_tile_k)
   // auto thr_CsC = thr_mma.partition_C(gC);  // (MMA, MMA_M, MMA_N)
-
+// if (thread0()) {
+//   PRINT(smem_q);
+//   PRINT(smem_v);
+// }
+#if 1
   auto thr_tQrQ =
-      thr_mma.partition_fragment_A(smem_q(_, _)); // (MMA, MMA_M, MMA_K)
+      thr_mma.partition_fragment_A(smem_q); // (MMA, MMA_M, MMA_K)
   // auto tBrB = thr_mma.partition_fragment_B(gB(_, _, 0)); // (MMA, MMA_N,
   // MMA_K)
   auto thr_tKrK =
-      ( thr_mma.partition_fragment_B(smem_k(_, _))); // (MMA, MMA_N, MMA_K)
+      ( thr_mma.partition_fragment_B(smem_k(_, _, 0))); // (MMA, MMA_N, MMA_K)
   auto thr_tCrC = partition_fragment_C(
       tiled_mma,
       Shape<Int<KernelTraits::ThreadblockShape0::kM>,
@@ -440,11 +471,161 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
   }
   // __syncthreads();
 // #if 0
-  cp_async_wait<1>();
+  // wait one submitted gmem->smem done
+  cp_async_wait<kStages - 1>();
   __syncthreads();
-  cute::copy(s2r_tiled_copy_q, thr_QsQ, thr_tQrQ);
 
+  cute::copy(s2r_tiled_copy_q, thr_QsQ, thr_tQrQ);
+  // cute::copy(thr_QsQ, thr_tQrQ);
+//  if (thread0()) {
+//   PRINT(thr_KsK);
+//   PRINT(thr_KsK(_, _,_, 0));
+//   PRINT(thr_tKrK_view);
+// }
+
+  // cute::copy(thr_KsK, thr_tKrK_view);
+  cute::copy(s2r_tiled_copy_k, thr_KsK(_, _,_, ismem_read), thr_tKrK_view);
+  // cute::copy(thr_KsK, thr_tKrK);
+
+
+      if (thread0()) {
+      // for (int i = 0; i < 2; ++i) {
+      //   printf("thr_KsK[%d]:%f\n", i, (float)(thr_KsK[i]));
+      //   printf("thr_tKrK[%d]:%f\n", i, (float)*((Element*)thr_tKrK.data() + i));
+      //   printf("thr_tKrK_view[%d]:%f\n", i, (float)*((Element*)thr_tKrK_view.data() + i));
+      // }
+      // PRINT(layout(thr_KsK));
+      // PRINT(layout(thr_tKrK));
+      // PRINT(s2r_tiled_copy_q);
+      // PRINT(thr_QsQ);
+      // PRINT(thr_tQrQ);
+      // PRINT(s2r_tiled_copy_k);
+      // PRINT(thr_KsK);
+      // PRINT(thr_tKrK_view);
+    }
+
+  clear(thr_tCrC);
+  cute::gemm(tiled_mma, thr_tCrC, thr_tQrQ, thr_tKrK, thr_tCrC);
+
+      if (thread0()) {
+      // for (int i = 0; i < 4; ++i) {
+      //   printf("thr_tKrK[%d]:%f\n", i, (float)*((Element*)thr_tKrK.data() + i));
+      //   printf("thr_KsK[%d]:%f\n", i, (float)(thr_KsK[i]));
+      // }
+      // PRINT(layout(thr_KsK));
+      // PRINT(layout(thr_tQrQ));
+      // PRINT(layout(thr_tKrK));
+      // PRINT(thr_KsK);
+      // PRINT(thr_tKrK_view);
+      // PRINT(thr_tCrC);
+      // 此print 后面的__syncthreads不可少
+    }
+    // __syncthreads();
+
+  // if (thread0()) {
+  //   for (int i = 0; i < 8; ++i) {
+  //     printf("threadIdx.x: %d, val: %f\n", threadIdx.x, (float)thr_tCrC(i));
+  //   }
+  // }
   using ElementAccumulator = typename KernelTraits::ElementAccumulator;
+  ElementAccumulator tCrC_max[2];
+  #pragma unroll
+  for (int i = 0; i < 2; ++i) {
+    tCrC_max[i] = -INFINITY;
+  }
+
+#pragma unroll
+  for (int i = 0; i < size<2>(thr_tCrC); ++i) {
+#pragma unroll
+    for (int j = 0; j < 2; ++j) {
+#pragma unroll
+      for (int m = 0; m < 2; ++m) {
+        const int offset = m + 2 * j + i * 4;
+        tCrC_max[j] = max(tCrC_max[j], (ElementAccumulator)*(thr_tCrC.data() + offset));
+      }
+    }
+  }
+
+#pragma unroll
+  for (int i = 1; i <= 2; i <<= 1) {
+    tCrC_max[0] = max(__shfl_xor_sync(0xffffffff, tCrC_max[0], i), tCrC_max[0]);
+    tCrC_max[1] = max(__shfl_xor_sync(0xffffffff, tCrC_max[1], i), tCrC_max[1]);
+  }
+
+  ElementAccumulator d[2]{0};
+  ElementAccumulator exp_tcrc_sum[2]{0};
+
+  auto exp_tcrc = make_tensor<ElementAccumulator>(shape(thr_tCrC));
+
+#pragma unroll
+  for (int i = 0; i < size<2>(thr_tCrC); ++i) {
+#pragma unroll
+    for (int j = 0; j < 2; ++j) {
+#pragma unroll
+      for (int m = 0; m < 2; ++m) {
+
+        // exp_tcrc((m, j), 0, i) =
+        //     exp((ElementAccumulator)thr_tCrC((m, j), 0, i) - tCrC_max[j]);
+        // exp_tcrc_sum[j] += exp_tcrc((m, j), 0, i);
+        const int offset = m + j * 2 + i * 4;
+        *(exp_tcrc.data() + offset) = exp((ElementAccumulator)(*(thr_tCrC.data() + offset)) - tCrC_max[j]);
+        exp_tcrc_sum[j] += (ElementAccumulator)(*(exp_tcrc.data() + offset));
+
+        //   if (thread0()) {
+        //   printf("thr_tCrC((%d, %d), 0, %d): %f\n", m, j, i,
+        //   (float)(thr_tCrC((m, j), 0, i))); printf("exp_tcrc((%d, %d), 0,
+        //   %d): %f\n", m, j, i, (float)(exp_tcrc((m, j), 0, i)));
+        // }
+      }
+    }
+  }
+  if (thread0()) {
+
+    // printf("exp_tcrc_sum[%d]:%f\n", 0, (float)exp_tcrc_sum[0]);
+    // printf("exp_tcrc_sum[%d]:%f\n", 1, (float)exp_tcrc_sum[1]);
+
+  }
+#pragma unroll
+  for (int i = 1; i <= 2; i <<= 1) {
+    exp_tcrc_sum[0] += __shfl_xor_sync(0xffffffff, exp_tcrc_sum[0], i);
+    exp_tcrc_sum[1] += __shfl_xor_sync(0xffffffff, exp_tcrc_sum[1], i);
+  }
+
+  d[0] = exp_tcrc_sum[0];
+  d[1] = exp_tcrc_sum[1];
+
+  if (thread0()) {
+    // printf("d[%d]:%f\n", 0, (float)d[0]);
+    // printf("d[%d]:%f\n", 1, (float)d[1]);
+    // printf("exp_tcrc_sum[%d]:%f\n", 0, (float)exp_tcrc_sum[0]);
+    // printf("exp_tcrc_sum[%d]:%f\n", 1, (float)exp_tcrc_sum[1]);
+    // printf("tCrC_max[%d]:%f\n", 0, (float)tCrC_max[0]);
+    // printf("tCrC_max[%d]:%f\n", 1, (float)tCrC_max[1]);
+    // PRINT((thr_tCrC));
+  }
+
+
+#pragma unroll
+  for (int i = 0; i < size<2>(thr_tCrC); ++i) {
+#pragma unroll
+    for (int j = 0; j < 2; ++j) {
+#pragma unroll
+      for (int m = 0; m < 2; ++m) {
+        // thr_tCrC((m, j), 0, i) = (Element)(exp_tcrc((m, j), 0, i) / d[j]);
+         const int offset = m + j * 2 + i * 4;
+
+        *(thr_tCrC.data() + offset) = static_cast<Element>(*(exp_tcrc.data() + offset)) / static_cast<Element>(d[j]);
+
+        // if (thread0()) {
+        //   printf("thr_tCrC((%d, %d), 0, %d): %f\n", m, j, i,
+        //   (float)(thr_tCrC((m, j), 0, i))); printf("exp_tcrc((%d, %d), 0,
+        //   %d): %f\n", m, j, i, (float)(exp_tcrc((m, j), 0, i)));
+        //   printf("d[%d]: %f\n", m, (float)d[j]);
+        // }
+      }
+    }
+  }
+
 
   typename KernelTraits::MMA1 tiled_mma1;
 
@@ -452,7 +633,7 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
   // auto mma1_tVsV = thr_mma1.partition_B(smem_v);
   auto mma1_tOgO = thr_mma1.partition_C(block_out);
 
-  auto mma1_tVrV = thr_mma1.partition_fragment_B(smem_v_NoSwizzle);
+  auto mma1_tVrV = thr_mma1.partition_fragment_B(smem_v(_, _, 0));
   auto mma1_tOrO = thr_mma1.partition_fragment_C(block_out(_, _));
 
   auto s2r_tiled_copy_v = make_tiled_copy_B(typename KernelTraits::S2RCopyAtomV{}, tiled_mma1);
@@ -460,158 +641,187 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
   auto mma1_tVsV = s2r_thr_copy_v.partition_S(smem_v);  // ? (CPY, CPY_M, CPY_K, kStage)
 
 
+  clear(mma1_tOrO);
+
+  cute::copy(s2r_tiled_copy_v, mma1_tVsV(_, _,_, ismem_read), mma1_tVrV);
+      if (thread0()) {
+      // for (int i = 0; i < 4; ++i) {
+      //   printf("mma1_tVsV[%d]:%f\n", i, (float)mma1_tVsV[i]);
+      //   printf("mma1_tVrV[%d]:%f\n", i, (float)mma1_tVrV[i]);
+      // }
+    // PRINT(s2r_tiled_copy_v);
+    // PRINT(mma1_tVsV);
+    // PRINT(mma1_tVrV);
+    }
   Tensor tOrrC = make_tensor(
       thr_tCrC.data(),
       convert_layout_acc_Aregs<KernelTraits::mma_traits>(thr_tCrC.layout()));
 
+  cute::gemm(tiled_mma1, mma1_tOrO, tOrrC, mma1_tVrV, mma1_tOrO);
+    if (thread0()) {
+    // PRINT(thr_tQrQ);
+    // PRINT(thr_tKrK);
+    // PRINT(thr_KsK);
+    // PRINT(thr_tKrK_view);
+    // PRINT(mma1_tVsV);
+    // PRINT(mma1_tVrV);
 
-  ElementAccumulator m_max[2];
-  ElementAccumulator d[2];
+  }
+
+  // if (thread0()) {
+  //   PRINT(layout((mma1_tVsV)));
+  //   PRINT(layout((mma1_tVsV(_,_,_,0))));
+  //   PRINT(layout(mma1_tVrV));
+  //   PRINT(layout(tOrrC));
+  //   PRINT(layout(mma1_tOrO));
+  //   PRINT(layout(mma1_tOgO));
+  // }
+
 
   #pragma unroll
-  for (int i = 0; i < 2; ++i) {
-    m_max[i] = -INFINITY;
-    d[i] = (ElementAccumulator)0.0f;
-  }
+    for(int i = 0; i < size<2>(mma1_tOrO); ++i) {
+  #pragma unroll
+      for (int j = 0; j < 2; ++j) {
+  #pragma unroll
+        for (int m = 0; m < 2; ++m) {
+          if (thread0()) {
+          // printf("phase0 mma1_tOrO((%d, %d), 0, %d): %f\n", m, j, i,
+          //        (float)(*(mma1_tOrO.data() + m + j * 2 + i * 4)));
+        }
+        }
+      }
+    }
 
   int ntile = (params.T + KernelTraits::ThreadblockShape0::kN - 1) /
           KernelTraits::ThreadblockShape0::kN;
+  if (thread0()) {
+    // printf("params.T:%d\n", params.T);
+    // printf("KernelTraits::ThreadblockShape0::kN:%d\n", KernelTraits::ThreadblockShape0::kN);
+    // printf("K:%d\n", K);
+  }
+  cp_async_wait<kStages - 2>();
+  __syncthreads();
+  ++ismem_read;
+  //s2r
+    cute::copy(s2r_tiled_copy_k, thr_KsK(_,_, 0, ismem_read), thr_tKrK_view(_,_,0));
+    cute::copy(s2r_tiled_copy_v, mma1_tVsV(_,_, 0, ismem_read), mma1_tVrV(_,_,0));
 
-  for (int itile = 0; itile < ntile; ++itile) {
-    cp_async_wait<0>();
-    __syncthreads();
 
-    tVgV = v_g2s_thr_copy.partition_S(tiled_block_v(_, _, itile));
+  int nk0 = size<2>(thr_tQrQ);
+  int nk1 = size<2>(mma1_tVrV);
 
-    copy(v_tiled_copy, tVgV, tVsV);
-    cp_async_fence();
+  for (int itile = 1; itile < ntile; ++itile) {
+
+    // tKgK = k_g2s_thr_copy.partition_S(tiled_block_k(_, _, k));
+
+    // must clear after each QxK
+    clear(thr_tCrC);
+#pragma unroll
+  for (int ik = 0; ik < nk0; ++ik) {
+        int ik_next = (ik + 1) % nk0;
+        if (ik == nk0 - 1) {
+        cp_async_wait<kStages - 2>();
+        __syncthreads();
+
+        ismem_read = (ismem_read + 1) % kStages;
+        }
+
+        // shm -> reg s[itile][ik + 1] -> r[ik + 1]
+        cute::copy(s2r_tiled_copy_k, thr_KsK(_, _, ik_next, ismem_read),
+                   thr_tKrK_view(_, _, ik_next));
+
+        if (ik == 0) {
+        if (itile_to_read < ntile) {
+          cute::copy(k_tiled_copy, tKgK(_, _, _, itile_to_read),
+                     tKsK(_, _, _, ismem_write));
+
+          cute::copy(v_tiled_copy, tVgV(_, _, _, itile_to_read),
+                     tVsV(_, _, _, ismem_write));
+
+          ++itile_to_read;
+          ismem_write = (ismem_write + 1) % kStages;
+        }
+        //when itile_to_read >= ntile, need commit too, to ensure that the remaining tiles can be waited
+        cp_async_fence();
+        }
+        cute::gemm(tiled_mma, thr_tCrC, thr_tQrQ(_, _, ik), thr_tKrK(_, _, ik),
+                   thr_tCrC);
+  }
+#if 1
+// cp_async_wait<0>();
+// __syncthreads();
 
 
+  // copy(k_tiled_copy, tKgK(_,_,_, itile), tKsK(_,_,_, 0));
 
+  // cp_async_fence();
+  //   cp_async_wait<0>();
+  // __syncthreads();
+
+// #pragma unroll
+//     for (int i = 0; i < size<1>(tKgK); ++i) {
+// #pragma unroll
+//       for (int j = 0; j < size<2>(tKgK); ++j) {
+//       // cute::copy(tKgK(_, i, j), tKsK(_, i, j));
+//       cute::copy(tKgK(_, i, j),  tKrK);
+//       cute::copy(tKrK,  tKsK(_, i, j));
+//       }
+//     }
+
+    // tVgV = v_g2s_thr_copy.partition_S(tiled_block_v(_, _, k));
+    // copy(v_tiled_copy, tVgV(_,_,_, itile), tVsV(_,_,_, 0));
+  // cp_async_fence();
+
+// #pragma unroll
+//     for (int i = 0; i < size<1>(tVgV); ++i) {
+// #pragma unroll
+//       for (int j = 0; j < size<2>(tVgV); ++j) {
+//       // cute::copy(tVgV(_, i, j), tVsV(_, i, j));
+//       cute::copy(tVgV(_, i, j),  tVrV);
+//       cute::copy(tVrV,  tVsV(_, i, j));
+//       }
+//     }
 
   //   cp_async_wait<0>();
   // __syncthreads();
     // cute::copy(thr_KsK, thr_tKrK);
     // smem -> reg
-    cute::copy(s2r_tiled_copy_k, thr_KsK, thr_tKrK_view);
+    // cute::copy(s2r_tiled_copy_k, thr_KsK, thr_tKrK_view);
+    if (thread0()) {
+      for (int i = 0; i < 4; ++i) {
+        // printf("thr_tKrK[%d]:%f\n", i, (float)thr_tKrK[i]);
+        // printf("thr_KsK[%d]:%f\n", i, (float)thr_KsK[i]);
+      }
 
-    clear(thr_tCrC);
-    //Q的顺序为内部->col->row, 为何不是内部->row->col?
-    cute::gemm(tiled_mma, thr_tCrC, thr_tQrQ, thr_tKrK, thr_tCrC);
-  __syncthreads();
-  // if (itile + 1 < ntile) {
-    int next_itile = (itile + 1) % ntile;
-    tKgK = k_g2s_thr_copy.partition_S(tiled_block_k(_, _, next_itile));
-
-    copy(k_tiled_copy, tKgK, tKsK);
-  // }
-  cp_async_fence();
-
-  if (thread0()) {
-    // PRINT(layout(thr_tQrQ));
-    // PRINT(layout(thr_tKrK));
-    // PRINT(layout(thr_tCrC));
-    // PRINT((thr_tQrQ));
-    // PRINT((thr_tKrK));
-    // PRINT((thr_tCrC));
     }
+    // clear(thr_tCrC);
+    //Q的顺序为内部->col->row, 为何不是内部->row->col?
+    // cute::gemm(tiled_mma, thr_tCrC, thr_tQrQ, thr_tKrK, thr_tCrC);
+    if (thread0()) {
+      // PRINT(layout(thr_tQrQ));
+      // PRINT(layout(thr_tKrK));
+      // PRINT(layout(thr_tCrC));
+      // PRINT((thr_tQrQ));
+      // PRINT((thr_tKrK));
+      // PRINT((thr_tCrC));
+    }
+
+
 
     ElementAccumulator new_tCrC_max[2];
     ElementAccumulator exp_oldm_sub_newm[2];
     ElementAccumulator new_m_max[2];
-    ElementAccumulator new_d[2];
-    ElementAccumulator new_exp_tcrc_sum[2];
+
     for (int i = 0; i < 2; ++i) {
       new_tCrC_max[i] = -INFINITY;
       exp_oldm_sub_newm[i] = -INFINITY;
       new_m_max[i] = -INFINITY;
-      new_d[i] = 0.0f;
-      new_exp_tcrc_sum[i] = 0.0f;
     }
 
-  // deal with residual
-  if (itile == ntile - 1) {
 
-    // ElementAccumulator new_o_scale[2]{0.f};
-    auto C_identity = make_identity_tensor(Shape<Int<KernelTraits::ThreadblockShape0::kM>,
-            Int<KernelTraits::ThreadblockShape0::kN>>{});
-    // auto s2r_c_identity_copy = make_tiled_copy_C(typename KernelTraits::S2RCopyAtomIdentityC{}, tiled_mma);
-    // auto s2r_c_identity_thr_copy = s2r_c_identity_copy.get_slice(threadIdx.x);
-    // auto tCiC = s2r_c_identity_thr_copy.partition_S(C_identity);
-    auto tCiC = thr_mma.partition_C(C_identity);
-    auto tCpC = make_tensor<bool>(make_shape(_2{}, size<1>(tCiC), size<2>(tCiC)));
-    if (thread0()) {
-      // print_tensor(tCiC);
-      // PRINT(get<1>(tCiC(4 * 1 + 1)));
-      // PRINT((tCiC(2)));
-      // PRINT(get<1>(tCiC((make_coord(1,0), 0, 7))));
-      // PRINT(get<0>(tCiC((make_coord(0,1), 0, 7))));
-      // PRINT(get<1>(tCiC((make_coord(0,1), 0, 7))));
-    }
-#pragma unroll
-    for (int i = 0; i < size<2>(tCpC); ++i) {
-      {
-#pragma unroll
-        for (int j = 0; j < size<0>(tCpC); ++j) {
-#pragma unroll
-          for (int m = 0; m < size<1>(tCpC); ++m) {
-            // tCpC(j, m, i) = threadIdx.x % 32 % 4 * 2 + i * 8 + j >= params.T - itile * KernelTraits::ThreadblockShape0::kN;
-            //why tCiC don't use (make_coord(0,0), 0, i)) to get value ?
-            tCpC(j, m, i) = get<1>(tCiC(4 * i + j)) >= params.T - itile * KernelTraits::ThreadblockShape0::kN;
-          if (threadIdx.x < 32 && tCpC(j, m, i)) {
-        // print("threadidx.x:%d,i:%d, threadIdx.x % 32 % 4 * 2 + i * 8 + j: %d, params.T - k * KernelTraits::ThreadblockShape0::kN: %d\n", threadIdx.x,i, threadIdx.x % 32 % 4 * 2 + i * 8 + j, params.T - k * KernelTraits::ThreadblockShape0::kN);
-        // printf("k:%d,get<1>(tCiC((0, 0, %d)): %d\n", k, i,(int)get<1>(tCiC((make_coord(0,0), 0, i))));
-        // printf("k:%d,get<0>(tCiC((0, 0, %d)): %d\n", k, i,(int)get<1>(tCiC((make_coord(0,1), 0, i))));
-        // printf("k:%d,get<0>(tCiC((0, 0, %d)): %d\n", k, i,(int)get<1>(tCiC((make_coord(1,0), 0, i))));
-        // printf("k:%d,get<0>(tCiC((0, 0, %d)): %d\n", k, i,(int)get<1>(tCiC((make_coord(1,1), 0, i))));
-        // printf("k:%d,get<0>(tCiC((0, 0, %d)): %d\n", k, i,get<0>(tCiC((make_coord(0,0), 0, i))));
-        // PRINT(tCiC((0, 0, i)));
-
-      }
-          }
-        }
-      }
-    }
-if (thread0()) {
-  // print(size<0>(shape((thr_tCrC(make_coord(_,_), 0, 0)))));
-  // print_tensor(get<0, 1>(thr_tCrC));
-  // print(get<1>(thr_tCrC));
-  // print(get<2>(thr_tCrC));
-}
-#pragma unroll
-      for (int i = 0; i < size<0>(thr_tCrC); ++i) {
-      #pragma unroll
-        for (int j = 0; j < size<1>(thr_tCrC); ++j) {
-              #pragma unroll
-           for (int m = 0; m < size<2>(thr_tCrC); ++m) {
-          if (tCpC(i % 2, j, m)) {
-            thr_tCrC(make_coord(i%2, i/2), j, m) = cutlass::half_t::bitcast(0xfbff);//half min
-            // printf("threadIdx:%d,i % 2:%d, m:%d, thr_tCrC(make_coord(%d, %d), j, m): %f\n", threadIdx.x,i%2, m,i%2, i/2, float(thr_tCrC(make_coord(i%2, i/2), j, m)));
-          }
-        }
-      }
-    }
-  }
-
-    if (thread0()) {
-      // PRINT(tCiC);
-      // PRINT(tCpC);
-      // PRINT(thr_tCrC);
-    }
-  //   if (itile + 1 < ntile) {
-  //   tKgK = k_g2s_thr_copy.partition_S(tiled_block_k(_, _, itile + 1));
-
-  //   copy(k_tiled_copy, tKgK, tKsK);
-  //   //   cp_async_wait<0>();
-  //   // __syncthreads();
-
-  //   tVgV = v_g2s_thr_copy.partition_S(tiled_block_v(_, _, itile + 1));
-
-  //   copy(v_tiled_copy, tVgV, tVsV);
-  //   cp_async_fence();
-  //       cp_async_wait<0>();
-  // __syncthreads();
-  //   }
+    ElementAccumulator new_d[2]{0};
+    ElementAccumulator new_exp_tcrc_sum[2]{0};
+    ElementAccumulator new_o_scale[2]{0.f};
 
 #pragma unroll
     for (int i = 0; i < size<2>(thr_tCrC); ++i) {
@@ -619,11 +829,9 @@ if (thread0()) {
       for (int j = 0; j < 2; ++j) {
 #pragma unroll
         for (int m = 0; m < 2; ++m) {
-          // const int offset = m + 2 * j + i * 4;
-          // new_tCrC_max[j] =
-          //     max(new_tCrC_max[j], (ElementAccumulator)*(thr_tCrC.data() + offset));
+          const int offset = m + 2 * j + i * 4;
           new_tCrC_max[j] =
-              max(new_tCrC_max[j], (ElementAccumulator)(thr_tCrC(make_coord(m, j), 0, i)));
+              max(new_tCrC_max[j], (ElementAccumulator)*(thr_tCrC.data() + offset));
         }
       }
     }
@@ -636,17 +844,14 @@ if (thread0()) {
           max(__shfl_xor_sync(0xffffffff, new_tCrC_max[1], i), new_tCrC_max[1]);
     }
 
-    new_m_max[0] = max(m_max[0], new_tCrC_max[0]);
-    new_m_max[1] = max(m_max[1], new_tCrC_max[1]);
+    new_m_max[0] = max(tCrC_max[0], new_tCrC_max[0]);
+    new_m_max[1] = max(tCrC_max[1], new_tCrC_max[1]);
+    exp_oldm_sub_newm[0] = exp(tCrC_max[0] - new_m_max[0]);
+    exp_oldm_sub_newm[1] = exp(tCrC_max[1] - new_m_max[1]);
 
-    exp_oldm_sub_newm[0] = exp(m_max[0] - new_m_max[0]);
-    exp_oldm_sub_newm[1] = exp(m_max[1] - new_m_max[1]);
-    //when k == 0, don't want O to scale, so make exp_oldm_sub_newm == 1;
-    if (itile==0) {
-      exp_oldm_sub_newm[0] = (ElementAccumulator)1;
-      exp_oldm_sub_newm[1] = (ElementAccumulator)1;
-    }
 
+
+    auto new_exp_tcrc = make_tensor<ElementAccumulator>(shape(thr_tCrC));
 
 #pragma unroll
     for (int i = 0; i < size<2>(thr_tCrC); ++i) {
@@ -657,14 +862,10 @@ if (thread0()) {
           // new_exp_tcrc((m, j), 0, i) =
           //     exp((ElementAccumulator)thr_tCrC((m, j), 0, i) - new_tCrC_max[j]);
           // new_exp_tcrc_sum[j] += new_exp_tcrc((m, j), 0, i);
-        thr_tCrC(make_coord(m, j), 0, i) = static_cast<Element>(cutlass::fast_exp((
-            thr_tCrC(make_coord(m, j), 0, i) - (Element)new_m_max[j])));
 
-        // const int offset = m + j * 2 + i * 4;
-        //         *(thr_tCrC.data() + offset) = static_cast<Element>(cutlass::fast_exp((
-        //     (*(thr_tCrC.data() + offset)) - (Element)new_m_max[j])));
-
-        new_exp_tcrc_sum[j] += (ElementAccumulator)(thr_tCrC(make_coord(m, j), 0, i));
+        const int offset = m + j * 2 + i * 4;
+        *(new_exp_tcrc.data() + offset) = exp((ElementAccumulator)(*(thr_tCrC.data() + offset)) - new_m_max[j]);
+        new_exp_tcrc_sum[j] += (ElementAccumulator)(*(new_exp_tcrc.data() + offset));
 
           //   if (thread0()) {
           //   printf("thr_tCrC((%d, %d), 0, %d): %f\n", m, j, i,
@@ -691,13 +892,23 @@ if (thread0()) {
     new_d[0] = d[0] * exp_oldm_sub_newm[0] + new_exp_tcrc_sum[0];
     new_d[1] = d[1] * exp_oldm_sub_newm[1] + new_exp_tcrc_sum[1];
 
-
+    // new_o_scale[0] = d[0] * exp_oldm_sub_newm[0] / new_d[0];
+    // new_o_scale[1] = d[1] * exp_oldm_sub_newm[1] / new_d[1];
+    new_o_scale[0] = d[0] * exp_oldm_sub_newm[0];
+    new_o_scale[1] = d[1] * exp_oldm_sub_newm[1];
     if (thread0()) {
       // printf("new_o_scale[0]:%f\n", new_o_scale[0]);
       // printf("new_o_scale[1]:%f\n", new_o_scale[1]);
       // printf("new_d[0]:%f\n", new_d[0]);
       // printf("new_d[1]:%f\n", new_d[1]);
-
+      // printf("d[0]:%f\n", d[0]);
+      // printf("d[1]:%f\n", d[1]);
+      // printf("exp_oldm_sub_newm[0]:%f\n", exp_oldm_sub_newm[0]);
+      // printf("exp_oldm_sub_newm[1]:%f\n", exp_oldm_sub_newm[1]);
+      // printf("new_m_max[0]:%f\n", new_m_max[0]);
+      // printf("new_m_max[1]:%f\n", new_m_max[1]);
+      // printf("new_exp_tcrc_sum[0]:%f\n", new_exp_tcrc_sum[0]);
+      // printf("new_exp_tcrc_sum[1]:%f\n", new_exp_tcrc_sum[1]);
     }
 
 #pragma unroll
@@ -708,16 +919,61 @@ if (thread0()) {
         for (int m = 0; m < 2; ++m) {
           // mma1_tOrO((m, j), 0, i) *= (Element)new_o_scale[j];
 
-          // const int offset = m + 2 * j + i * 4;
-          // *(mma1_tOrO.data() + offset) =  *(mma1_tOrO.data() + offset) * static_cast<Element>(exp_oldm_sub_newm[j]);
-          mma1_tOrO(make_coord(m, j), 0, i) = mma1_tOrO(make_coord(m, j), 0, i) * static_cast<Element>(exp_oldm_sub_newm[j]);
+          const int offset = m + 2 * j + i * 4;
+          *(mma1_tOrO.data() + offset) =  *(mma1_tOrO.data() + offset) * static_cast<Element>(new_o_scale[j]);
         }
       }
     }
-    cp_async_wait<1>();
-  __syncthreads();
 
-    cute::copy(s2r_tiled_copy_v, mma1_tVsV, mma1_tVrV);
+#pragma unroll
+    for (int i = 0; i < size<2>(thr_tCrC); ++i) {
+#pragma unroll
+      for (int j = 0; j < 2; ++j) {
+#pragma unroll
+        for (int m = 0; m < 2; ++m) {
+          // thr_tCrC((m, j), 0, i) =
+          //     (Element)exp(
+          //         ((ElementAccumulator)thr_tCrC((m, j), 0, i) - new_m_max[j])) /
+          //     new_d[j];
+
+        const int offset = m + 2 * j + i * 4;
+              //     *(thr_tCrC.data() + offset) =
+              // exp(
+              //     ((ElementAccumulator)(*(thr_tCrC.data() + offset)) - new_m_max[j])) /
+              // new_d[j];
+        *(thr_tCrC.data() + offset) = static_cast<Element>(exp((
+            (ElementAccumulator)(*(thr_tCrC.data() + offset)) - new_m_max[j])));
+        // if (thread0()) {
+        //   printf("thr_tCrC((%d, %d), 0, %d): %f\n", m, j, i,
+        //          (float)(*(thr_tCrC.data() + offset)));
+        // }
+
+
+
+        }
+      }
+    }
+// cp_async_wait<0>();
+// __syncthreads();
+
+int OxV_ismem_read = (ismem_read - 1 + kStages) % kStages;
+
+#pragma unroll
+for (int ik = 0; ik < nk1; ++ik) {
+      int ik_next = (ik + 1) % nk1;
+        if (ik == nk1 - 1) {
+
+        OxV_ismem_read = (OxV_ismem_read + 1) % kStages;
+        }
+      // shm -> reg s[itile][ik + 1] -> r[ik + 1]
+      cute::copy(s2r_tiled_copy_v, mma1_tVsV(_, _, ik_next, OxV_ismem_read),
+                 mma1_tVrV(_, _, ik_next));
+
+      cute::gemm(tiled_mma1, mma1_tOrO, tOrrC(_, _, ik), mma1_tVrV(_, _, ik),
+                 mma1_tOrO);
+}
+
+    // cute::copy(s2r_tiled_copy_v, mma1_tVsV, mma1_tVrV);
     if (thread0()) {
       for (int i = 0; i < 4; ++i) {
         // printf("phase0 mma1_tVsV[%d]:%f\n", i, (float)mma1_tVsV[i]);
@@ -725,26 +981,7 @@ if (thread0()) {
       }
 
     }
-    if (thread0()) {
-      // PRINT(tOrrC);
-      // for (int i = 0; i < size(tOrrC); ++i) {
-      //   printf("tOrrC(%d):%f\n", i, float(tOrrC(i)));
-      // }
-      // PRINT(thr_tCrC);
-      // for (int i = 0; i < size(thr_tCrC); ++i) {
-      //   printf("thr_tCrC(%d):%f\n", i, float(thr_tCrC(i)));
-      // }
-    }
-    cute::gemm(tiled_mma1, mma1_tOrO, tOrrC, mma1_tVrV, mma1_tOrO);
-  // __syncthreads();
-
-  // __syncthreads();
-
-    d[0] = new_d[0];
-    d[1] = new_d[1];
-    m_max[0] = new_m_max[0];
-    m_max[1] = new_m_max[1];
-  }
+    // cute::gemm(tiled_mma1, mma1_tOrO, tOrrC, mma1_tVrV, mma1_tOrO);
 
 #pragma unroll
     for (int i = 0; i < size<2>(mma1_tOrO); ++i) {
@@ -753,68 +990,25 @@ if (thread0()) {
 #pragma unroll
         for (int m = 0; m < 2; ++m) {
           // mma1_tOrO((m, j), 0, i) *= (Element)new_o_scale[j];
-          // const int offset = m + 2 * j + i * 4;
-          // *(mma1_tOrO.data() + offset) =  *(mma1_tOrO.data() + offset) / static_cast<Element>(d[j]);
-          mma1_tOrO(make_coord(m, j), 0, i) = mma1_tOrO(make_coord(m, j), 0, i) / static_cast<Element>(d[j]);
-
+          const int offset = m + 2 * j + i * 4;
+          *(mma1_tOrO.data() + offset) =  *(mma1_tOrO.data() + offset) / static_cast<Element>(new_d[j]);
         }
       }
     }
 
-  using EpilogueSharedStorage = typename KernelTraits::EpilogueSharedStorage;
-  EpilogueSharedStorage &epi_smem_storage = *(reinterpret_cast<EpilogueSharedStorage *>(s));
-
-  Tensor e_smem = make_tensor(make_smem_ptr((Element*)&epi_smem_storage.e_smem), typename KernelTraits::SmemLayoutEpilogue{});
-
-  auto mma1_tOsO = thr_mma1.partition_C(e_smem);
-
-  cute::copy(mma1_tOrO, mma1_tOsO);
-  __syncthreads();
-  typename KernelTraits::e_s2g_copy_tile epi_smem_copy_tile;
-
-  auto thr_epi_smem_copy = epi_smem_copy_tile.get_slice(threadIdx.x);
-  auto tEsE = thr_epi_smem_copy.partition_S(e_smem);
-  auto tEgE = thr_epi_smem_copy.partition_D(block_out);
-  auto block_out_identity = make_identity_tensor(shape(block_out));
-  auto tEiE = thr_epi_smem_copy.partition_S(block_out_identity);
-  auto tEpE_S = make_tensor<bool>(make_shape(size<1>(tEgE)));
-  auto tEpE_F = make_tensor<bool>(make_shape(size<2>(tEgE)));
-#pragma unroll
-  for (int i = 0; i < size<0>(tEpE_S); ++i) {
-    tEpE_S(i) = get<0>(tEiE(make_coord(0,0), i, 0)) + blockIdx.x * KernelTraits::ThreadblockShape1::kM < params.S;
-  }
-
-#pragma unroll
-  for (int i = 0 ; i < size<0>(tEpE_F); ++i) {
-    tEpE_F(i) = get<1>(tEiE(make_coord(0,0), 0, i)) + blockIdx.y * KernelTraits::ThreadblockShape1::kN < params.F;
+    d[0] = new_d[0];
+    d[1] = new_d[1];
+    tCrC_max[0] = new_m_max[0];
+    tCrC_max[1] = new_m_max[1];
+  #endif
 
   }
 
-
+  // cp_async_wait<0>();
+  // __syncthreads();
+  cute::copy(mma1_tOrO, mma1_tOgO);
   if (thread0()) {
-    // PRINT(block_out);
-    // PRINT(e_smem);
-    // PRINT(tEiE);
-    // PRINT(tEgE);
-    // PRINT(tEpE_S);
-    // PRINT(tEpE_F);
-  }
-#pragma unroll
-for (int s = 0; s < size<1>(tEsE); ++s) {
-  #pragma unroll
-  for (int f = 0; f < size<2>(tEsE); ++f) {
-    if (tEpE_S(s) && tEpE_F(f)) {
-      // cute::copy(epi_smem_copy_tile, tEsE(_, s, f), tEgE(_, s, f));
-      cute::copy(tEsE(_, s, f), tEgE(_, s, f));
-    }
-  }
-}
-  // cute::copy(epi_smem_copy_tile, tEsE, tEgE);
-
-  // cute::copy(mma1_tOrO, mma1_tOgO);
-  if (thread0()) {
-    // PRINT(tEsE);
-    // PRINT(tEgE);
+    // PRINT(layout((mma1_tOrO)));
     // PRINT(layout((mma1_tOgO)));
   }
   auto mma1_tOrO_data = mma1_tOrO.data();
@@ -847,13 +1041,10 @@ for (int s = 0; s < size<1>(tEsE); ++s) {
 
 int main() {
   // int N = 1, S = 64, T = 128, F = 128, H = 1;
-  // int N = 1, S = 33, T = 111, F = 128, H = 1;
-  // int N = 1, S = 1024, T = 1024, F = 128, H = 8;
-  int N = 1, S = 1111, T = 1111, F = 104, H = 8;
+  int N = 1, S = 1024, T = 1024, F = 128, H = 1;
   // int N = 1, S = 16, T = 32, F = 32, H = 1;
   MultiHeadAttentionProblemSize problem(N, S, T, kE, F, H);
-  using KernelT = KernelTraits<cutlass::half_t, float, 8, kE, 128, 1>;
-
+  using KernelT = KernelTraits<cutlass::half_t, float, 8, 32, 32, 3>;
   MemHelper<KernelT::Element> helper;
   auto Q = helper.GetCpuGpuBuffer(problem.QuerySize());
   auto K = helper.GetCpuGpuBuffer(problem.KeySize());
@@ -869,7 +1060,6 @@ int main() {
       (F + KernelT::ThreadblockShape1::kN - 1) / KernelT::ThreadblockShape1::kN,
       H);
   int smem_s = sizeof(KernelT::SharedStorage);
-  printf("size of smem in KB:%d\n", smem_s / 1024);
 
   if (smem_s >= (48 << 10)) {
     cudaError_t err = cudaFuncSetAttribute(
@@ -895,9 +1085,9 @@ int main() {
     std::cout << "final error: " << cudaGetErrorString(err) << std::endl;
     exit(-1);
   }
-  Element *C_gt = (Element *)helper.GetCpuBuffer(H *S * T);
-  Element *m_gt = (Element *)helper.GetCpuBuffer(H *S);
-  Element *res_gt = (Element *)helper.GetCpuBuffer(H * S * F);
+  Element *C_gt = (Element *)helper.GetCpuBuffer(S * T);
+  Element *m_gt = (Element *)helper.GetCpuBuffer(S);
+  Element *res_gt = (Element *)helper.GetCpuBuffer(S * F);
 
 
   Element* cpu_a = (Element*)Q.first;
@@ -908,45 +1098,38 @@ int main() {
   int n = T;
   int k = kE;
 #ifdef CPU_CHECK
-for (int h = 0; h < H; ++h) {
-  Element* each_head_cpu_a = cpu_a + h * kE;
-  Element* each_head_cpu_b = cpu_b + h * kE;
-  Element* each_head_cpu_C_gt = C_gt + h * S * T;
-  Element* each_head_cpu_m_gt = m_gt + h * S;
-  Element* each_head_cpu_cpu_d = cpu_d + h * F;
-  Element* each_head_cpu_res_gt = res_gt + h * F;
   for (int i = 0 ; i < m; ++i) {
     for (int j = 0; j < n; ++j) {
       ElementAccumulator sum = (ElementAccumulator)0.f;
       for (int l = 0; l < k; ++l) {
-        sum += each_head_cpu_a[i * H * k + l] * each_head_cpu_b[l + j * H * k];
+        sum += cpu_a[i * k + l] * cpu_b[l + j * k];
       }
       // printf("sum:%f\n", (float)sum);
-      each_head_cpu_C_gt[i * n + j] = (Element)sum;
+      C_gt[i * n + j] = (Element)sum;
     }
   }
 
   for (int i = 0; i < m; ++i) {
     ElementAccumulator m_max = -INFINITY;
     for (int j = 0; j < n; ++j) {
-      m_max= max(m_max, (ElementAccumulator)each_head_cpu_C_gt[i * n + j]);
+      m_max= max(m_max, (ElementAccumulator)C_gt[i * n + j]);
     }
-    each_head_cpu_m_gt[i] = m_max;
+    m_gt[i] = m_max;
   }
 
   for (int i = 0; i < m; ++i) {
     for (int j = 0; j < n; ++j) {
-      each_head_cpu_C_gt[i * n + j] = (Element)exp(each_head_cpu_C_gt[i * n + j] - each_head_cpu_m_gt[i]);
+      C_gt[i * n + j] = (Element)exp(C_gt[i * n + j] - m_gt[i]);
     }
   }
 
   for (int i = 0; i < m; ++i) {
     ElementAccumulator sum = (ElementAccumulator)0.f;
     for (int j = 0; j < n; ++j) {
-      sum += each_head_cpu_C_gt[i * n + j];
+      sum += C_gt[i * n + j];
     }
     for (int j = 0; j < n; ++j) {
-      each_head_cpu_C_gt[i * n + j] = each_head_cpu_C_gt[i * n + j] / (Element)sum;
+      C_gt[i * n + j] = C_gt[i * n + j] / (Element)sum;
     }
   }
 
@@ -954,14 +1137,14 @@ for (int h = 0; h < H; ++h) {
     for (int j = 0; j < F; ++j) {
       ElementAccumulator sum = (ElementAccumulator)0;
       for (int p = 0; p < n; ++p) {
-        sum += each_head_cpu_C_gt[i * n + p] * each_head_cpu_cpu_d[p * H *  F + j];
+        sum += C_gt[i * n + p] * cpu_d[p * F + j];
       }
-      each_head_cpu_res_gt[i * H * F + j] = (Element)sum;
+      res_gt[i * F + j] = (Element)sum;
     }
   }
-}
 
-  helper.Regression(res_gt, (Element*)Out.first, false, false);
+
+  helper.Regression(res_gt, (Element*)Out.first);
 #endif
 
 }
