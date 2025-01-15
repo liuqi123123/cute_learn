@@ -19,7 +19,8 @@ enum class InitialType {
   AllOne,
   Identity,
   Increment,
-  Coorded
+  PaddingDim0,
+
 };
 
 template <typename T>
@@ -47,7 +48,7 @@ private:
 
 public:
   MemHelper() : rd_(), eng_(rd_()), distr_(-1.0f, 1.0f) {}
-  CG_PTR GetCpuGpuBuffer(size_t size, InitialType type = InitialType::Random, int Stride = 0) {
+  CG_PTR GetCpuGpuBuffer(size_t size, InitialType type = InitialType::Random, int padding_start_length = 0, int padding_end_length = 0) {
     T *cpu_ptr = new T[size]{static_cast<T>(0)};
 
     if (type == InitialType::Random) {
@@ -86,13 +87,26 @@ public:
         // cpu_ptr[i] = (float)(i % 2048) * 0.001;
         cpu_ptr[i] = (float)i* 0.001 ;
       }
-    } else if (type == InitialType::Coorded) {
-      // for (size_t i = 0; i < size; ++i) {
-      //   float row = i / Stride;
-      //   int col = i % Stride;
-      //   int lenth = std::to_string(std::abs(col)).length();
-      //   cpu_ptr[i] = (float)(row + (float)col / (float)lenth);
-      // }
+    } else if (type == InitialType::PaddingDim0) {
+        if constexpr (std::is_same_v<bool, T>) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::bernoulli_distribution d(0.5);
+        for (size_t i = 0; i < size; ++i) {
+          cpu_ptr[i] = d(gen);
+        }
+      } else {
+        for (size_t i = 0; i < size; ++i) {
+          cpu_ptr[i] = (T)distr_(eng_);
+        }
+      }
+      for (size_t i = 0; i < size; ++i) {
+        int row = i / padding_end_length;
+        int col = i % padding_end_length;
+        if (col >= padding_start_length) {
+          cpu_ptr[col + padding_end_length * row] = (T)0;
+        }
+      }
 
     }
 
