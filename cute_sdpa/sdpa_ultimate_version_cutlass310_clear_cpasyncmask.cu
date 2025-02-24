@@ -6,7 +6,7 @@ using Element = cutlass::half_t;
 using ElementAccumulator = float;
 
 static const int kE = 32;
-static const bool UseMask = true;
+static const bool UseMask = false;
 
 
 
@@ -21,7 +21,7 @@ struct KernelTraits {
 
   using Element = Element_;
   using ElementAccumulator = ElementAccumulator_;
-  using ThreadblockShape0 = cutlass::gemm::GemmShape<64, 64, kE>;
+  using ThreadblockShape0 = cutlass::gemm::GemmShape<32, 64, kE>;
   using WarpShape0 = cutlass::gemm::GemmShape<16, ThreadblockShape0::kN, kE>;
 
   using ThreadblockShape1 =
@@ -672,13 +672,13 @@ int main() {
   // int N = 1, S = 128, T = 128, F = 128, H = 1;
   // int N = 1, S = 128, T = 61, F = 128, H = 1;
   // int N = 2, S = 1111, T = 1111, F = 104, H = 2;
-  int N = 1, S = 1020, T = 1015, F = 128, H = 8;
-  // int N = 1, S = 597, T = 491, F = 32, H = 1;
+  // int N = 1, S = 1024*5, T = 1024*5, F = 128, H = 8;
+  int N = 1, S = 1024, T = 1024, F = 32, H = 8;
   // int N = 5, S = 100, T = 1, F = 32, H = 4;
   // int N = 1, S = 16, T = 32, F = 32, H = 1;
   MultiHeadAttentionProblemSize problem(N, S, T, kE, F, H);
 
-  using KernelT = KernelTraits<cutlass::half_t, float, 8, kE, 128, UseMask, 1>;
+  using KernelT = KernelTraits<cutlass::half_t, float, 8, kE, 32, UseMask, 8>;
 
   MemHelper<KernelT::Element> helper;
   auto Q = helper.GetCpuGpuBuffer(problem.QuerySize());

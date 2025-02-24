@@ -1,12 +1,12 @@
 
 #include "utils.h"
 
-// #define CPU_CHECK
+#define CPU_CHECK
 using Element = cutlass::half_t;
 using ElementAccumulator = float;
 
-static const int kE = 32;
-static const bool UseMask = true;
+static const int kE = 128;
+static const bool UseMask = false;
 
 
 
@@ -21,7 +21,7 @@ struct KernelTraits {
 
   using Element = Element_;
   using ElementAccumulator = ElementAccumulator_;
-  using ThreadblockShape0 = cutlass::gemm::GemmShape<64, 64, kE>;
+  using ThreadblockShape0 = cutlass::gemm::GemmShape<32, 64, kE>;
   using WarpShape0 = cutlass::gemm::GemmShape<16, ThreadblockShape0::kN, kE>;
 
   using ThreadblockShape1 =
@@ -174,6 +174,7 @@ struct KernelTraits {
   using c_identity_copy_atom = Copy_Atom<c_identity_copy_traits, Element>;
 
   using mask_s2r_copy_op = SM75_U32x2_LDSM_N;
+  // using mask_s2r_copy_op = SM75_U32x1_LDSM_N;
   using mask_s2r_copy_traits = Copy_Traits<mask_s2r_copy_op>;
   using mask_s2r_copy_atom = Copy_Atom<mask_s2r_copy_traits, Element>;
 
@@ -216,6 +217,7 @@ struct KernelTraits {
 template <typename KernelTraits>
 __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
                     Element *k, Element *v, Element* mask, Element *out) {
+
   static const int kE = KernelTraits::kE;
   static const int Split_kF = KernelTraits::Split_kF;
   static const bool TensorMask = KernelTraits::Mask;
@@ -397,12 +399,20 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
             Int<KernelTraits::ThreadblockShape0::kN>>{}); // (MMA, MMA_M, MMA_N)
 
   auto thr_tKrK_view = s2r_thr_copy_k.retile_D(thr_tKrK);
+  auto thr_tQrQ_view = s2r_thr_copy_q.retile_D(thr_tQrQ);
 
 
+if (thread0()) {
+  // printf("@@@@@");
+  // PRINT(layout(thr_tKrK));
+  // PRINT(layout(thr_tKrK_view));
+  // PRINT(layout(thr_tQrQ));
+  // PRINT(layout(thr_tQrQ_view));
+}
 
   cp_async_wait<1>();
   __syncthreads();
-  cute::copy(s2r_tiled_copy_q, thr_QsQ, thr_tQrQ);
+  cute::copy(s2r_tiled_copy_q, thr_QsQ, thr_tQrQ_view);
 
 
   using ElementAccumulator = typename KernelTraits::ElementAccumulator;
@@ -529,7 +539,10 @@ __global__ void mha(MultiHeadAttentionProblemSize params, Element *q,
       auto s2r_mask_thr_copy = s2r_mask_tile_copy.get_slice(threadIdx.x);
       auto s2r_tMsM = s2r_mask_thr_copy.partition_S(smem_m);
       decltype(thr_tCrC) s2r_tMrM;
-
+      if (thread0()) {
+        PRINT(layout(s2r_tMsM));
+        PRINT(layout(s2r_tMrM));
+      }
       cute::copy(s2r_mask_tile_copy, s2r_tMsM, s2r_tMrM);
 
       Operator_3D_Regs<size<0>(thr_tCrC), size<1>(thr_tCrC), size<2>(thr_tCrC)>(
@@ -607,9 +620,28 @@ Operator_3D_Regs<size<2>(mma1_tOrO), 2, 2>(
 
     cp_async_wait<1>();
   __syncthreads();
-
+    // if (thread0()) {
+    //   PRINT(layout(mma1_tVrV));
+    //   PRINT(layout(mma1_tVrV));
+    // }
     cute::copy(s2r_tiled_copy_v, mma1_tVsV, mma1_tVrV);
     ///< gemm  QK @ V
+
+    // Tensor tOrrC = make_tensor(
+    // thr_tCrC.data(),
+    // convert_layout_acc_Aregs<KernelTraits::mma_traits>(thr_tCrC.layout()));
+
+    // Tensor tOrrC = make_tensor(
+    // thr_tCrC.data(),
+    // thr_tCrC.layout());
+
+
+
+    //     if (thread0()) {
+    //   PRINT(layout(tOrrC));
+    //   PRINT(layout(mma1_tVrV));
+    //   PRINT(layout(mma1_tOrO));
+    // }
     cute::gemm(tiled_mma1, mma1_tOrO, tOrrC, mma1_tVrV, mma1_tOrO);
 
   }
@@ -671,16 +703,16 @@ int main() {
   // int N = 1, S = 12, T = 120, F = 128, H = 1;
   // int N = 2, S = 111, T = 112, F = 128, H = 2;
   // int N = 2, S = 128, T = 128, F = 128, H = 2;
-  // int N = 1, S = 128, T = 128, F = 128, H = 1;
+  int N = 1, S = 28, T = 2328, F = 128, H = 28;
   // int N = 1, S = 128, T = 61, F = 128, H = 1;
   // int N = 2, S = 1111, T = 1111, F = 104, H = 2;
-  int N = 1, S = 1024*5, T = 1024*5, F = 128, H = 8;
+  // int N = 1, S = 1024*5, T = 1024*5, F = 128, H = 8;
   // int N = 3, S = 591, T = 491, F = 32, H = 2;
   // int N = 5, S = 100, T = 1, F = 32, H = 4;
   // int N = 1, S = 16, T = 32, F = 32, H = 1;
   MultiHeadAttentionProblemSize problem(N, S, T, kE, F, H);
 
-  using KernelT = KernelTraits<cutlass::half_t, float, 8, kE, 128, UseMask, 8>;
+  using KernelT = KernelTraits<cutlass::half_t, float, 8, kE, 32, UseMask, 8>;
 
   MemHelper<KernelT::Element> helper;
   auto Q = helper.GetCpuGpuBuffer(problem.QuerySize());
