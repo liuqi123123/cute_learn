@@ -2,10 +2,10 @@
 #include "cuda_runtime.h"
 #include "cute/util/print.hpp"
 #include "cutlass/half.h"
+#include <cassert>
 #include <iostream>
 #include <random>
 #include <vector>
-#include <cassert>
 
 #define PRINT(STR)                                                             \
   do {                                                                         \
@@ -14,17 +14,24 @@
     printf("\n\n");                                                            \
   } while (0)
 
+#define PRINT_LAYOUT(STR)                                                      \
+  do {                                                                         \
+    printf("%s:\n", #STR);                                                     \
+    print_layout(STR);                                                         \
+    printf("\n\n");                                                            \
+  } while (0)
+
 enum class InitialType {
   Random,
   AllOne,
+  AllZero,
   Identity,
   Increment,
   PaddingDim0,
 
 };
 
-template <typename T>
-class MemHelper {
+template <typename T> class MemHelper {
   struct pair_hash {
     template <typename T1, typename T2>
     size_t operator()(const std::pair<T1, T2> &p) const noexcept {
@@ -47,8 +54,10 @@ private:
   std::uniform_real_distribution<float> distr_;
 
 public:
-  MemHelper() : rd_(), eng_(rd_()), distr_(-1.0f, 1.0f) {}
-  CG_PTR GetCpuGpuBuffer(size_t size, InitialType type = InitialType::Random, int padding_start_length = 0, int padding_end_length = 0) {
+  MemHelper() : rd_(), eng_(rd_()), distr_(0.0f, 1.0f) {}
+  CG_PTR GetCpuGpuBuffer(size_t size, InitialType type = InitialType::Random,
+                         int padding_start_length = 0,
+                         int padding_end_length = 0) {
     T *cpu_ptr = new T[size]{static_cast<T>(0)};
 
     if (type == InitialType::Random) {
@@ -59,6 +68,16 @@ public:
         for (size_t i = 0; i < size; ++i) {
           cpu_ptr[i] = d(gen);
         }
+      } else if (std::is_same_v<int8_t, T>) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        // 使用 std::numeric_limits 来获得 int8_t 的最小值和最大值
+        std::uniform_int_distribution<int> d(
+            std::numeric_limits<int8_t>::min(),
+            std::numeric_limits<int8_t>::max());
+        for (size_t i = 0; i < size; ++i) {
+          cpu_ptr[i] = static_cast<int8_t>(d(gen));
+        }
       } else {
         for (size_t i = 0; i < size; ++i) {
           cpu_ptr[i] = (T)distr_(eng_);
@@ -66,9 +85,15 @@ public:
       }
     } else if (type == InitialType::AllOne) {
       for (size_t i = 0; i < size; ++i) {
-        cpu_ptr[i] = 1;
+        cpu_ptr[i] = (T)1;
       }
-    } else if (type == InitialType::Identity) {
+    } else if (type == InitialType::AllZero) {
+      for (size_t i = 0; i < size; ++i) {
+        cpu_ptr[i] = (T)0;
+      }
+    }
+
+    else if (type == InitialType::Identity) {
       double sqrtNum = sqrt(size);
       assert(sqrtNum == floor(sqrtNum) &&
              "size must be the square of an integer");
@@ -85,10 +110,10 @@ public:
     } else if (type == InitialType::Increment) {
       for (size_t i = 0; i < size; ++i) {
         // cpu_ptr[i] = (float)(i % 2048) * 0.001;
-        cpu_ptr[i] = (float)i* 0.001 ;
+        cpu_ptr[i] = (float)i * 0.001;
       }
     } else if (type == InitialType::PaddingDim0) {
-        if constexpr (std::is_same_v<bool, T>) {
+      if constexpr (std::is_same_v<bool, T>) {
         std::random_device rd;
         std::mt19937 gen(rd());
         std::bernoulli_distribution d(0.5);
@@ -107,7 +132,6 @@ public:
           cpu_ptr[col + padding_end_length * row] = (T)0;
         }
       }
-
     }
 
     T *gpu_ptr;
@@ -135,7 +159,8 @@ public:
                cudaMemcpyDeviceToHost);
   }
 
-  void Regression(T *gt, T *result, bool first_wrong_break = true, bool always_print_ans = false) {
+  void Regression(T *gt, T *result, bool first_wrong_break = true,
+                  bool always_print_ans = false) {
     size_t size = c_size_[(void *)gt];
     using Ts = float;
     bool first_wrong_found = false;
@@ -172,21 +197,19 @@ public:
       }
 
       if (always_print_ans || first_wrong_found) {
-            std::cout << "idx: " << i << " : "
-              << "gt: " << (Ts)((T *)gt)[i] << " vs res:"
-              << (Ts)((T *)result)[i] << std::endl;
+        std::cout << "idx: " << i << " : "
+                  << "gt: " << (Ts)((T *)gt)[i]
+                  << " vs res:" << (Ts)((T *)result)[i] << std::endl;
       }
       if (dif > (Ts)absolute_error) {
         first_wrong_found = true;
         std::cout << "idx: " << i << " get wrong: "
-                  << "gt: " << (Ts)((T *)gt)[i] << " vs res:"
-                  << (Ts)((T *)result)[i] << std::endl;
+                  << "gt: " << (Ts)((T *)gt)[i]
+                  << " vs res:" << (Ts)((T *)result)[i] << std::endl;
         // if (first_wrong_break && false == always_print_ans) {
         //   break;
         // }
       }
-
-
     }
   }
 

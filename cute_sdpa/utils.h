@@ -33,12 +33,39 @@ DEVICE_INLINE auto convert_layout_acc_Aregs(Layout acc_layout) {
   if constexpr (mma_shape_K == 8) {
     return acc_layout;
   }
-  auto l = logical_divide(acc_layout,
-                          Shape<X, X, _2>{}); // (4, MMA_M, (2, MMA_N / 2)))
-  return make_layout(make_layout(get<0>(l), get<2, 0>(l)), get<1>(l),
-                     get<2, 1>(l));
+  else {
+    auto l = logical_divide(acc_layout,
+                            Shape<X, X, _2>{}); // (4, MMA_M, (2, MMA_N / 2)))
+    return make_layout(make_layout(get<0>(l), get<2, 0>(l)), get<1>(l),
+                      get<2, 1>(l));
+  }
+// return acc_layout;
 };
 
+
+
+
+// template <int mma_shape_K>
+// DEVICE_INLINE auto convert_layout_acc_Aregs(Layout acc_layout) {
+//   // using X = Underscore;
+//   // static_assert(decltype(size<0>(acc_layout))::value == 4);
+//   // static_assert(decltype(rank(acc_layout))::value == 3);
+//   // constexpr int mma_shape_K = get<2>(typename MMA_traits::Shape_MNK{});
+//   static_assert(mma_shape_K == 8 || mma_shape_K == 16);
+//   // if constexpr (mma_shape_K == 8) {
+//   //   return acc_layout;
+//   // } else {
+//     auto l = logical_divide(acc_layout,
+//                             Shape<X, X, _2>{}); // (4, MMA_M, (2, MMA_N / 2)))
+//     return make_layout(make_layout(get<0>(l), get<2, 0>(l)), get<1>(l),
+//                       get<2, 1>(l));
+//   // }
+//   //   return acc_layout;
+// };
+// template <>
+// DEVICE_INLINE auto convert_layout_acc_Aregs<8>(Layout acc_layout) {
+//     return acc_layout;
+// };
 
 template<typename T, int Size>
 DEVICE_INLINE void Initial_1D_Regs(T (&R)[Size], T value) {
