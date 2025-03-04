@@ -21,6 +21,13 @@
     printf("\n\n");                                                            \
   } while (0)
 
+#define PRINT_TENSOR(STR)                                                      \
+  do {                                                                         \
+    printf("%s:\n", #STR);                                                     \
+    print_tensor(STR);                                                         \
+    printf("\n\n");                                                            \
+  } while (0)
+
 enum class InitialType {
   Random,
   AllOne,
@@ -54,7 +61,7 @@ private:
   std::uniform_real_distribution<float> distr_;
 
 public:
-  MemHelper() : rd_(), eng_(rd_()), distr_(0.0f, 1.0f) {}
+  MemHelper() : rd_(), eng_(rd_()), distr_(-1.0f, 1.0f) {}
   CG_PTR GetCpuGpuBuffer(size_t size, InitialType type = InitialType::Random,
                          int padding_start_length = 0,
                          int padding_end_length = 0) {
