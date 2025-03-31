@@ -26,7 +26,7 @@ __forceinline__ __device__ auto convert_type(Tensor<Engine, Layout> const &tenso
 }
 
 using Element = cutlass::half_t;
-using ElementAccumulator = float;
+using ElementAccumulator = cutlass::half_t;
 using ElementCompute = float;
 
 template<typename Element_,typename ElementAccumulator_, typename ElementCompute_, int Align_, int WarpNum_, int WarpStrideIterations_, int BlockThreadArrangementkContiguous_>
@@ -139,11 +139,10 @@ __global__ void gemv(Params p) {
         accumulator(s) += (ElementAccumulator)tCrA(make_coord(i, 0), s) * (ElementAccumulator)tCrB(make_coord(i, 0), 0);
         // float a = (ElementAccumulator)tCgA(make_coord(i, 0), s, 0, ik);
         // float b =  (ElementAccumulator)tCgB(make_coord(i, 0), 0, 0, ik);
-        // if (thread0()) {
-        //   PRINT_TENSOR(accumulator);
-        //   printf("a:%f, b:%f\n", a, b);
-
-        // }
+        if (thread0()) {
+          // PRINT_TENSOR(accumulator);
+          // printf("a:%f, b:%f\n", a, b);
+        }
       }
     }
   }
@@ -192,6 +191,9 @@ if (threadIdx.x < stride_warp_num * KernelTraits::WarpStrideIterations) {
   for (int i = 0; i < contigous_warp_num; ++i) {
     contigous_warp_sum += smem[threadIdx.x * contigous_warp_num + i];
   }
+  // if (thread0()) {
+  //   printf("contigous_warp_sum:%f\n", contigous_warp_sum);
+  // }
       //   if (threadIdx.x == 0 && blockIdx.x == 1) {
       //     printf("[contigous_warp_sum]:%f\n", contigous_warp_sum);
       //     printf("blockIdx.x * KernelTraits::BlockThreadArrangementStride * KernelTraits::WarpNum + threadIdx.x:%d\n", blockIdx.x * KernelTraits::BlockThreadArrangementStride * KernelTraits::WarpNum + threadIdx.x);
@@ -227,19 +229,19 @@ int main() {
   MemHelper<Element> mem_helper;
   int M = 1024*18;
   int N = 1;
-  int K = 1024*3;
+  int K = 1024*4;
   // int M = 512;
   // int N = 1;
   // int K = 512;
   // auto A = mem_helper.GetCpuGpuBuffer(M * K, InitialType::AllOne);
   // auto B = mem_helper.GetCpuGpuBuffer(K, InitialType::AllOne);
-    auto A = mem_helper.GetCpuGpuBuffer(M * K);
+  auto A = mem_helper.GetCpuGpuBuffer(M * K);
   auto B = mem_helper.GetCpuGpuBuffer(K);
   auto C = mem_helper.GetCpuGpuBuffer(M);
   auto gt = mem_helper.GetCpuBuffer(M);
 
 // template<typename Element_,typename ElementAccumulator_, typename ElementCompute_, int Align_, int WarpNum_, int WarpStrideIterations_, int BlockThreadArrangementkContiguous_>
-  using KT = KernelTraits<Element, ElementAccumulator,ElementCompute, 8, 4,4,128>;
+  using KT = KernelTraits<Element, ElementAccumulator,ElementCompute, 8, 8,2,128>;
   Params p{(Element*)A.second, (Element*)B.second, (Element*)C.second, M, N, K};
 
   unsigned int threadnum = KT::WarpNum * 32;
@@ -247,8 +249,9 @@ int main() {
 
   dim3 grid{blocknum};
   dim3 block{threadnum};
-
+for (int i = 0; i < 50; ++i) {
   gemv<KT><<<grid, block>>>(p);
+}
 
   mem_helper.SyncGpuToCpu(C);
 

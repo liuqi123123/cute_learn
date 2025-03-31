@@ -26,7 +26,7 @@ __forceinline__ __device__ auto convert_type(Tensor<Engine, Layout> const &tenso
 }
 
 using Element = cutlass::half_t;
-using ElementAccumulator = cutlass::half_t;
+using ElementAccumulator = float;
 using ElementCompute = float;
 
 template<typename Element_,typename ElementAccumulator_, typename ElementCompute_, int Align_, int WarpNum_, int WarpStrideIterations_, int BlockThreadArrangementkContiguous_>
@@ -191,14 +191,14 @@ int main() {
   MemHelper<Element> mem_helper;
   int M = 1024*18;
   int N = 1;
-  int K = 1024*3;
+  int K = 1024*4;
   auto A = mem_helper.GetCpuGpuBuffer(M * K);
   auto B = mem_helper.GetCpuGpuBuffer(K);
   auto C = mem_helper.GetCpuGpuBuffer(M);
   auto gt = mem_helper.GetCpuBuffer(M);
 
 // template<typename Element_,typename ElementAccumulator_, typename ElementCompute_, int Align_, int WarpNum_, int WarpStrideIterations_, int BlockThreadArrangementkContiguous_>
-  using KT = KernelTraits<Element, ElementAccumulator,ElementCompute, 8, 4,1,32>;
+  using KT = KernelTraits<Element, ElementAccumulator,ElementCompute, 8, 4,2,32>;
   Params p{(Element*)A.second, (Element*)B.second, (Element*)C.second, M, N, K};
 
   unsigned int threadnum = KT::WarpNum * 32;
@@ -206,8 +206,9 @@ int main() {
 
   dim3 grid{blocknum};
   dim3 block{threadnum};
-
+for (int i= 0; i < 100; ++i) {
   gemv<KT><<<grid, block>>>(p);
+}
 
   mem_helper.SyncGpuToCpu(C);
 
