@@ -25,6 +25,11 @@ __global__ void f(void* device_A,
                   int batch_stride_A,
                   int batch_stride_B,
                   int batch_stride_C) {
+
+// CopyTile copytile;
+// auto thr_copy = copytile.get_slice(threadIdx.x);
+
+
   extern __shared__ Element smem[];
   auto shape_a = make_shape(m, k);
   auto stride_a = make_stride(k, _1{});

@@ -70,18 +70,20 @@ public:
     if (type == InitialType::Random) {
       if constexpr (std::is_same_v<bool, T>) {
         std::random_device rd;
-        std::mt19937 gen(rd());
+        // std::mt19937 gen(rd());
+        std::mt19937 gen(12345);
         std::bernoulli_distribution d(0.5);
         for (size_t i = 0; i < size; ++i) {
           cpu_ptr[i] = d(gen);
         }
       } else if (std::is_same_v<int8_t, T>) {
         std::random_device rd;
-        std::mt19937 gen(rd());
+        std::mt19937 gen(12345);
+        // std::mt19937 gen(rd());
         // 使用 std::numeric_limits 来获得 int8_t 的最小值和最大值
-        std::uniform_int_distribution<int> d(
-            std::numeric_limits<int8_t>::min(),
-            std::numeric_limits<int8_t>::max());
+        std::uniform_int_distribution<int> d(-15,15);
+            // std::uniform_int_distribution<int> d(std::numeric_limits<int8_t>::min(),
+            // std::numeric_limits<int8_t>::max());
         for (size_t i = 0; i < size; ++i) {
           cpu_ptr[i] = static_cast<int8_t>(d(gen));
         }
@@ -168,6 +170,7 @@ public:
 
   void Regression(T *gt, T *result, bool first_wrong_break = true,
                   bool always_print_ans = false) {
+    std::cout << "begin Regression..." << std::endl;
     size_t size = c_size_[(void *)gt];
     using Ts = float;
     bool first_wrong_found = false;
@@ -218,6 +221,8 @@ public:
         // }
       }
     }
+    std::cout << "end Regression" << std::endl;
+
   }
 
   ~MemHelper() {

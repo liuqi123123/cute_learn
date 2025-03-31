@@ -8,8 +8,8 @@ using Element = cutlass::half_t;
 using ElementAccumulator = float;
 using ElementCompute = float;
 using namespace cute;
-static const int kE_ = 16;
-static const bool UseMask = false;
+static const int kE = 64;
+static const bool UseMask = true;
 
 template <bool Mask_, int kE_, int Split_kF_, int Align_Mask_ = 1,
           int Split_kS_ = 32, typename ArchTag_ = cutlass::arch::Sm80,
@@ -121,8 +121,7 @@ struct KernelTraits {
   static const int Q_swizzle_S = kE == 128 ? 4 : 3;
   using SmemLayoutAtomQ = decltype(composition(
       // B M S
-      // Swizzle<3, 3, Q_swizzle_S>{},
-      Swizzle<0, 0, 0>{},
+      Swizzle<3, 3, Q_swizzle_S>{},
       make_layout(Shape<Int<ThreadblockShape0::kM>, Int<kE>>{},
                   Stride<Int<kE>, _1>{})));
   using SmemLayoutQ = decltype(tile_to_shape(
@@ -480,15 +479,6 @@ __global__ void SDPA(MultiHeadAttentionProblemSize problem,
     clear(thr_tCrC);
     // gemm Q@K
     cute::gemm(tiled_mma, thr_tCrC, thr_tQrQ, thr_tKrK, thr_tCrC);
-    if (thread0()) {
-      // PRINT(layout(thr_tQrQ));
-      // PRINT(layout(thr_tKrK));
-      // PRINT(layout(thr_tCrC));
-      // PRINT(layout(smem_q));
-      // PRINT(layout(typename KernelTraits::SmemLayoutQ{}));
-
-
-    }
 
     // for sm_75, need transform f32 mma out to f16, for the mma1 gemm
     Tensor converted_thr_tCrC = make_fragment_like<ElementCompute>(thr_tCrC);
@@ -505,15 +495,22 @@ __global__ void SDPA(MultiHeadAttentionProblemSize problem,
     if constexpr (TensorMask) {
       auto smem_m = make_tensor(make_smem_ptr((Element *)&smem.m_smem),
                                 typename KernelTraits::SmemLayoutMask{});
-
       auto tensor_mask =
           make_tensor(make_gmem_ptr(mask),
-                      make_shape(problem.N * problem.H, problem.S, problem.T),
-                      make_stride(problem.S * problem.T, problem.T, Int<1>{}));
-      int mask_index = mask_broadcast ? 0 : blockIdx.z;
+                      make_shape(problem.N ,problem.H, problem.S, problem.T),
+                      make_stride(problem.H*problem.S*problem.T,problem.T * problem.S, problem.T, Int<1>{}));
+      // int mask_index = mask_broadcast_type == MaskBroadcastType::ST2NHST ? 0 :( mask_broadcast_type == MaskBroadcastType::HST2NHST ? );
       auto block_mask = coalesce(
-          local_tile(tensor_mask, make_tile(_1{}, problem.S, problem.T),
-                     make_coord(mask_index, _0{}, _0{})));
+          local_tile(tensor_mask, make_tile(_1{}, _1{}, problem.S, problem.T),
+                     make_coord(blockIdx.z / problem.H, blockIdx.z % problem.H,  _0{}, _0{})));
+      // auto tensor_mask =
+      //     make_tensor(make_gmem_ptr(mask),
+      //                 make_shape(problem.N * problem.H, problem.S, problem.T),
+      //                 make_stride(problem.S * problem.T, problem.T, Int<1>{}));
+      // int mask_index = mask_broadcast ? 0 : blockIdx.z;
+      // auto block_mask = coalesce(
+      //     local_tile(tensor_mask, make_tile(_1{}, problem.S, problem.T),
+      //                make_coord(mask_index, _0{}, _0{})));
 
       auto tiled_tensor_mask =
           (local_tile(block_mask,
@@ -730,8 +727,9 @@ __global__ void SDPA(MultiHeadAttentionProblemSize problem,
 int main() {
   // int N = 1, S = 12, T = 120, F = 128, H = 1;
   // int N = 2, S = 111, T = 112, F = 128, H = 2;
-  int N = 2, S = 596, T = 490, F = 120, H = 3;
   // int N = 1, S = 1024, T = 1024, F = 128, H = 1;
+  int N = 2, S = 596, T = 493, F = 120, H = 3;
+  // int N = 2, S = 1024, T = 1024, F = 128, H = 1;
   // int N = 1, S = 16, T = 79, F = 32, H = 1;
   // int N = 1, S = 128, T = 128, F = 32, H = 1;
   // int N = 2, S = 1111, T = 1111, F = 104, H = 2;
@@ -739,9 +737,9 @@ int main() {
   // int N = 3, S = 591, T = 491, F = 32, H = 2;
   // int N = 5, S = 100, T = 1, F = 32, H = 4;
   // int N = 1, S = 16, T = 32, F = 32, H = 1;
-  MultiHeadAttentionProblemSize problem(N, S, T, kE_, F, H);
+  MultiHeadAttentionProblemSize problem(N, S, T, kE, F, H);
 
-using KernelT = KernelTraits<UseMask, kE_, 16, 1, 32, cutlass::arch::Sm80>;
+using KernelT = KernelTraits<UseMask, 32, 32, 1, 32, cutlass::arch::Sm80>;
 
   MemHelper<KernelT::Element> helper;
   MemHelper<ElementCompute> compute_helper;
@@ -800,18 +798,18 @@ using KernelT = KernelTraits<UseMask, kE_, 16, 1, 32, cutlass::arch::Sm80>;
 
   int m = S;
   int n = T;
-  int k = kE_;
+  int k = kE;
 for (int in = 0; in < N; ++in) {
-  Element* each_N_cpu_a = cpu_a + in * kE_ * S * H;
-  Element* each_N_cpu_b = cpu_b + in * kE_ * T * H;
+  Element* each_N_cpu_a = cpu_a + in * kE * S * H;
+  Element* each_N_cpu_b = cpu_b + in * kE * T * H;
   ElementCompute* each_N_cpu_C_gt = C_gt + in * S * T * H;
   ElementCompute* each_N_cpu_m_gt = m_gt + in * S * H;
   Element* each_N_cpu_cpu_d = cpu_d + in * F * H * T;
   Element* each_N_cpu_res_gt = res_gt + in * F * H * S;
   Element* each_N_cpu_mask = mask + in * H * S * T;
 for (int h = 0; h < H; ++h) {
-  Element* each_head_cpu_a = each_N_cpu_a + h * kE_;
-  Element* each_head_cpu_b = each_N_cpu_b + h * kE_;
+  Element* each_head_cpu_a = each_N_cpu_a + h * kE;
+  Element* each_head_cpu_b = each_N_cpu_b + h * kE;
   ElementCompute* each_head_cpu_C_gt = each_N_cpu_C_gt + h * S * T;
   ElementCompute* each_head_cpu_m_gt = each_N_cpu_m_gt + h * S;
   Element* each_head_cpu_cpu_d = each_N_cpu_cpu_d + h * F;

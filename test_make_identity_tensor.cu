@@ -17,8 +17,8 @@
 using namespace cute;
 
 void test_complete_shape() {
-  // auto l = Layout<Shape<_8, _6>, Stride<_6, _1>>{};
-  auto l = Layout<Shape<_8, _6>, Stride<_1, _8>>{};
+  auto l = Layout<Shape<_8, _6>, Stride<_6, _1>>{};
+
 
   auto tile = Layout<Shape<_2, _3>>{};
 
@@ -278,7 +278,32 @@ void test_patitionS() {
 int main() {
   // test_complete_shape();
   // test_incomplete_shape();
-  test_patitionS();
+    // auto l = Layout<Shape<_8, Shape<_6,_2>, _9>>{};
+    auto l = make_layout(Shape<_8, Shape<_6,_2>, _9>{}, LayoutRight{});
+    printf("%3d  ", l(0, make_coord(0, 1), 0));
+  PRINT(layout(l));
+  PRINT((get<1>(l)));
+  PRINT((get<1, 1, 0>(l)));
+  PRINT(stride<_0{}>(l));
+  PRINT(shape<_1{}>(l));
+  auto s = make_shape(3, 4);
+  auto v = make_shape(4, 4);
+  s = v;
+  PRINT(s);
+  Layout<Shape<>, Stride<>> l0;
+  Layout l1 = Layout<Shape<_1,_1>, Stride<_1, _2>>{};
+  l0 = l1;
+  PRINT(l0);
+
+
+  // PRINT(stride(l)(0));
+
+auto layout = Layout<Shape <_2,Shape <_1,_6>>,
+                     Stride<_1,Stride<_6,_2>>>{};
+auto result = coalesce(layout);
+  print(layout);
+  print(result);
+  // test_patitionS();
   return 0;
 
 }
