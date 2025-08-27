@@ -1,1 +1,7 @@
 nvcc --std=c++17 -arch=sm_86   -I /opt/deeproute/common/cutlass/include/  test_cute_gemv_rowmajor.cu -o a
+nvcc -lineinfo --ptxas-options=-v --std=c++17 -arch=sm_86 --expt-relaxed-constexpr  -I ../ -I ../../cutlass/include/
+ conv_v7_nobankconflict_test_cutlasscpaync_multistages_epi_overlapsloadmath_parampack_epiadvance_abalign8.cu   -o a7 && ./a7
+
+
+ nvcc -lineinfo --ptxas-options=-v --std=c++17 -arch=sm_86 --expt-relaxed-constexpr  -I ../ -I ../../cutlass/include/   conv_v84_nobankconflict_test_cutlasscpaync_multistages_epi_overlapsloadmath_parampack_epiadvance_cutlass.cu   -o a7 && ./a7 &&
+ sudo /opt/nvidia/nsight-compute/2022.2.1/ncu  --set full -o conv85_Aalign8_Balign16Global -f ./a7
