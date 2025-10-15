@@ -6,7 +6,7 @@
 #include <iostream>
 #include <random>
 #include <vector>
-
+#include "/home/liuqi/project/venom_project/venom2/venom/venom/host/data_initializer.h"
 #define PRINT(STR)                                                             \
   do {                                                                         \
     printf("%s:\n", #STR);                                                     \
@@ -35,7 +35,9 @@ enum class InitialType {
   Identity,
   Increment,
   PaddingDim0,
-
+  MaskWMSA,
+  MaskCuasal,
+  VenomRandom
 };
 
 template <typename T> class MemHelper {
@@ -62,9 +64,9 @@ private:
 
 public:
   MemHelper() : rd_(), eng_(rd_()), distr_(-1.0f, 1.0f) {}
-  CG_PTR GetCpuGpuBuffer(size_t size, InitialType type = InitialType::Random,
+  CG_PTR GetCpuGpuBuffer(size_t size, InitialType type = InitialType::Random, int min = -1, int max = 1,
                          int padding_start_length = 0,
-                         int padding_end_length = 0) {
+                         int padding_end_length = 0,  std::array<int, 26> wmsa_info = {}) {
     T *cpu_ptr = new T[size]{static_cast<T>(0)};
 
     if (type == InitialType::Random) {
@@ -101,7 +103,9 @@ public:
         cpu_ptr[i] = (T)0;
       }
     }
-
+else if (type == InitialType::VenomRandom) {
+venom::uniform_initializer<T>::invoke(cpu_ptr, size, min, max);
+    }
     else if (type == InitialType::Identity) {
       double sqrtNum = sqrt(size);
       assert(sqrtNum == floor(sqrtNum) &&
@@ -141,6 +145,112 @@ public:
           cpu_ptr[col + padding_end_length * row] = (T)0;
         }
       }
+    }
+    else if (type == InitialType::MaskWMSA) {
+      double sqrtNum = sqrt(size);
+      assert(sqrtNum == floor(sqrtNum) &&
+             "when mask m-msa, size must be the square of an integer");
+      int t = sqrtNum;
+      int stride = t;
+      //initial -inf
+      for (int i = 0; i < size; ++i) {
+        if (std::is_same_v<T, cutlass::half_t>) {
+          cpu_ptr[i] = std::numeric_limits<cutlass::half_t>::lowest();
+        } else if (std::is_same_v<T, float>) {
+          cpu_ptr[i] = -cutlass::platform::numeric_limits<float>::infinity();
+        } else {
+          std::cout << "error type;" << std::endl;
+        }
+      }
+      //set 0
+      for (int i = 0; i < 25; ++i) {
+        int l = wmsa_info[i];
+        int r = wmsa_info[i + 1];
+        int ptr_addr_offset = l * stride + l;
+        int intarnel = r - l;
+        // printf("intarnel:%d\n", intarnel);
+        T* new_ptr = cpu_ptr + ptr_addr_offset;
+        for (int m = 0; m < intarnel; ++m) {
+          for (int n = 0; n < intarnel; ++n) {
+            new_ptr[m * stride + n] = (T)0;
+          }
+        }
+      }
+
+      // for (int i = 0; i <1444; ++i) {
+      //   for (int j = 0; j < 1444; ++j) {
+      //     if (cpu_ptr[i * stride + j] == (T)0) {
+      //         // printf("%d ", cpu_ptr[i * stride + j]);
+      //         printf("0 ");
+      //     } else {
+      //         printf("- ");
+
+      //     }
+      //     // printf("%d ", cpu_ptr[i * stride + j]);
+      //   }
+      //     printf("\n");
+
+      // }
+
+      // for (int i = 0; i < size; ++i) {
+      //   if (std::is_same_v<T, cutlass::half_t>) {
+      //     cpu_ptr[i] = std::numeric_limits<cutlass::half_t>::lowest();
+      //   } else if (std::is_same_v<T, float>) {
+      //     cpu_ptr[i] = -cutlass::platform::numeric_limits<float>::infinity();
+      //   } else {
+      //     std::cout << "error type;" << std::endl;
+      //   }
+      // }
+
+      // int loop_n = cute::ceil_div(t, 64);
+
+
+      // for (int i = 0; i < loop_n; ++i) {
+      //   for (int m = i * 64; m < (i + 1) * 64; ++m) {
+      //     for (int n = i * 64; n < (i + 1) * 64; ++n) {
+      //       int row_idx = n;
+      //       int col_idx = m;
+      //       int offset = col_idx + row_idx * (t);
+      //       if (row_idx < t && col_idx < t) {
+      //         cpu_ptr[offset] = 0;
+      //       }
+      //     }
+      //   }
+      // }
+
+    }
+    else if (type == InitialType::MaskCuasal) {
+      double sqrtNum = sqrt(size);
+      assert(sqrtNum == floor(sqrtNum) &&
+             "when MaskCuasal, size must be the square of an integer");
+      int t = sqrtNum;
+      int stride = t;
+      for (int i = 0; i < t; ++i) {
+        for (int j = 0; j < t; ++j) {
+          if (i >= j) {
+            cpu_ptr[i * stride + j] = 0;
+          } else {
+            cpu_ptr[i * stride + j] = std::numeric_limits<cutlass::half_t>::lowest();
+          }
+        }
+      }
+
+      // for (int i = 0; i <t; ++i) {
+      //   for (int j = 0; j < t; ++j) {
+      //     if (cpu_ptr[i * stride + j] == (T)0) {
+      //         // printf("%d ", cpu_ptr[i * stride + j]);
+      //         printf("0 ");
+      //     } else {
+      //         printf("- ");
+
+      //     }
+      //     // printf("%d ", cpu_ptr[i * stride + j]);
+      //   }
+      //     printf("\n");
+
+      // }
+
+
     }
 
     T *gpu_ptr;
@@ -185,7 +295,7 @@ public:
       if constexpr (std::is_same_v<T, int8_t>) {
         absolute_error = 1;
       } else if constexpr (std::is_same_v<T, cutlass::half_t>) {
-        absolute_error = 0.05;
+        absolute_error = 0.01;
       } else {
         absolute_error = 0.001;
       }
@@ -227,8 +337,12 @@ public:
 
   ~MemHelper() {
     for (auto &p : cpu_gpu_ptr_set_) {
-      delete[] (T *)p.first;
-      cudaFree(p.second);
+      if (!(T *)p.first) {
+        delete[] (T *)p.first;
+      }
+      if (!p.second) {
+        cudaFree(p.second);
+      }
     }
     for (auto c : cpu_ptr_set_) {
       delete[] (T *)c;
